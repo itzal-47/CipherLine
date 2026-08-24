@@ -84,7 +84,15 @@ CREATE POLICY "anon_delete_reactions" ON reactions FOR DELETE
 
 CREATE INDEX IF NOT EXISTS idx_reactions_message_id ON reactions(message_id);
 
-ALTER PUBLICATION supabase_realtime ADD TABLE reactions;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables
+    WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'reactions'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE reactions;
+  END IF;
+END $$;
 
 -- Revoke direct SELECT on rooms
 DROP POLICY IF EXISTS "anon_select_rooms" ON rooms;

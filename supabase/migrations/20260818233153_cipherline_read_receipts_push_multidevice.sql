@@ -82,4 +82,12 @@ CREATE POLICY "anon_delete_push_subs" ON push_subscriptions FOR DELETE
 
 ALTER TABLE participants ADD COLUMN IF NOT EXISTS device_id text;
 
-ALTER PUBLICATION supabase_realtime ADD TABLE read_receipts;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables
+    WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'read_receipts'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE read_receipts;
+  END IF;
+END $$;
