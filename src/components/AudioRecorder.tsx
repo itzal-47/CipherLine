@@ -34,6 +34,12 @@ export function AudioRecorder({ onSend, onCancel }: AudioRecorderProps) {
 
   const startRecording = async () => {
     setError('');
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setError('GRAVAÇÃO DE ÁUDIO INDISPONÍVEL NESTE NAVEGADOR/CONEXÃO (REQUER HTTPS)');
+      return;
+    }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
@@ -81,8 +87,17 @@ export function AudioRecorder({ onSend, onCancel }: AudioRecorderProps) {
       timerRef.current = setInterval(() => {
         setDuration((d) => d + 1);
       }, 1000);
-    } catch {
-      setError('ACESSO AO MICROFONE NEGADO — VERIFIQUE AS PERMISSÕES DO NAVEGADOR');
+    } catch (err) {
+      const name = (err as Error)?.name;
+      if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+        setError('ACESSO AO MICROFONE NEGADO — VERIFIQUE AS PERMISSÕES DO NAVEGADOR');
+      } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+        setError('NENHUM MICROFONE ENCONTRADO NESTE DISPOSITIVO');
+      } else if (name === 'NotReadableError') {
+        setError('MICROFONE EM USO POR OUTRO APLICATIVO');
+      } else {
+        setError('FALHA AO ACESSAR MICROFONE — TENTE NOVAMENTE');
+      }
     }
   };
 

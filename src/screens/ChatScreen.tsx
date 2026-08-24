@@ -432,7 +432,7 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
     const encrypted = await encryptText(text, roomCode);
     const burnJson = burnConfig.seconds > 0 ? JSON.parse(JSON.stringify(burnConfig)) : null;
 
-    const { data: msg } = await supabase
+    const { data: msg, error: insertErr } = await supabase
       .from('messages')
       .insert({
         room_id: roomId,
@@ -443,6 +443,11 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
       })
       .select()
       .single();
+
+    if (insertErr) {
+      setSystemMessage('FALHA AO ENVIAR MENSAGEM');
+      return;
+    }
 
     if (msg) {
       playSendSound();
@@ -486,7 +491,7 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
       const storagePath = await uploadEncryptedAudio(roomId, tempId, blob, roomCode, setUploadProgress);
 
       const placeholder = await encryptText('[audio]', roomCode);
-      const { data: msg } = await supabase
+      const { data: msg, error: insertErr } = await supabase
         .from('messages')
         .insert({
           room_id: roomId,
@@ -499,6 +504,10 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
         })
         .select()
         .single();
+
+      if (insertErr) {
+        throw insertErr;
+      }
 
       if (msg) {
         playSendSound();
@@ -546,7 +555,7 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
       const storagePath = await uploadImage(roomId, tempId, blob, setUploadProgress);
 
       const placeholder = await encryptText('[image]', roomCode);
-      const { data: msg } = await supabase
+      const { data: msg, error: insertErr } = await supabase
         .from('messages')
         .insert({
           room_id: roomId,
@@ -558,6 +567,10 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
         })
         .select()
         .single();
+
+      if (insertErr) {
+        throw insertErr;
+      }
 
       if (msg) {
         playSendSound();

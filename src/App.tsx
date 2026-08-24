@@ -19,6 +19,33 @@ interface ChatSession {
   isPermanent: boolean;
 }
 
+const CHAT_SESSION_KEY = 'cipherline_chat_session';
+
+function saveChatSession(session: ChatSession, nickname: string) {
+  try {
+    localStorage.setItem(CHAT_SESSION_KEY, JSON.stringify({ ...session, nickname }));
+  } catch {
+    // localStorage indisponível (modo privado, etc.) — segue sem persistir
+  }
+}
+
+function loadChatSession(): (ChatSession & { nickname: string }) | null {
+  try {
+    const raw = localStorage.getItem(CHAT_SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearChatSession() {
+  try {
+    localStorage.removeItem(CHAT_SESSION_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 export default function App() {
   const [screen, setScreen] = useState<Screen>('home');
   const [nickname, setNickname] = useState('');
@@ -56,6 +83,41 @@ export default function App() {
     });
 
     return () => listener.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (chatSession) {
+      saveChatSession(chatSession, nickname);
+    } else {
+      clearChatSession();
+    }
+  }, [chatSession, nickname]);
+
+  // Restaura a sala ativa (se ainda existir) após reload ou volta de background
+  useEffect(() => {
+    const saved = loadChatSession();
+    if (!saved) return;
+
+    (async () => {
+      const { data: participant } = await supabase
+        .from('participants')
+        .select('id, room_id')
+        .eq('id', saved.participantId)
+        .maybeSingle();
+
+      if (participant) {
+        setChatSession({
+          roomId: saved.roomId,
+          roomCode: saved.roomCode,
+          participantId: saved.participantId,
+          isPermanent: saved.isPermanent,
+        });
+        setNickname(saved.nickname);
+        setScreen('chat');
+      } else {
+        clearChatSession();
+      }
+    })();
   }, []);
 
   const loadProfile = async (userId: string) => {
