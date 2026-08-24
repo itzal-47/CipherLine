@@ -66,8 +66,10 @@ export function LoginScreen({ onGuest, onAuthSuccess }: LoginScreenProps) {
         return;
       }
       if (data.user) {
-        await sendVerificationCode(email);
-        setPhase('verify');
+        // Verificação por código desativada por enquanto — conta fica associada
+        // ao e-mail normalmente, mas sem confirmação (recuperação de conta por
+        // e-mail fica indisponível até reativarmos esse fluxo).
+        onAuthSuccess();
       }
     } catch {
       setError('FALHA AO CRIAR CONTA');
