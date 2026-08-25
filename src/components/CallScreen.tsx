@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Phone, PhoneOff, Mic, MicOff, Video, VideoOff, Camera, CameraOff, AlertTriangle } from 'lucide-react';
 import {
   createPeerConnection,
-  sendSignaling,
+  sendOnChannel,
   subscribeSignaling,
   getUserMediaStream,
   adaptBitrate,
@@ -41,6 +41,15 @@ export function CallScreen({
   const [error, setError] = useState('');
   const [audioLevel, setAudioLevel] = useState(0);
 
+  // Mantém o valor mais recente de callState acessível dentro de callbacks
+  // "congelados" (como o setTimeout de 30s abaixo), que de outra forma só
+  // enxergariam o valor do momento em que foram criados — causando o bug de
+  // a chamada cair sozinha aos 30s mesmo já atendida e em andamento.
+  const callStateRef = useRef(callState);
+  useEffect(() => {
+    callStateRef.current = callState;
+  }, [callState]);
+
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
@@ -51,6 +60,7 @@ export function CallScreen({
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const rafRef = useRef<number | null>(null);
+  const signalChannelRef = useRef<ReturnType<typeof subscribeSignaling> | null>(null);
 
   const cleanup = useCallback(() => {
     if (pcRef.current) {
@@ -101,10 +111,12 @@ export function CallScreen({
   };
 
   const handleEnd = useCallback(() => {
-    sendSignaling(roomId, myId, peerId, 'call-end', {}).catch(() => {});
+    if (signalChannelRef.current) {
+      sendOnChannel(signalChannelRef.current, myId, peerId, 'call-end', {}).catch(() => {});
+    }
     cleanup();
     onEnd();
-  }, [roomId, myId, peerId, cleanup, onEnd]);
+  }, [myId, peerId, cleanup, onEnd]);
 
   // Main WebRTC setup
   useEffect(() => {
@@ -140,7 +152,7 @@ export function CallScreen({
 
         pc.onicecandidate = (e) => {
           if (e.candidate) {
-            sendSignaling(roomId, myId, peerId, 'ice', e.candidate.toJSON()).catch(() => {});
+            if (signalChannelRef.current) sendOnChannel(signalChannelRef.current, myId, peerId, 'ice', e.candidate.toJSON()).catch(() => {});
           }
         };
 
@@ -162,6 +174,15 @@ export function CallScreen({
           switch (msg.type) {
             case 'call-accept':
               setCallState('connected');
+              // 'connected' aqui só significa que o outro lado atendeu — a
+              // conexão de mídia (WebRTC) pode ainda demorar ou falhar em
+              // redes difíceis. Se não estabelecer de verdade em 20s, avisa
+              // em vez de deixar a tela presa em "conectado" sem áudio/vídeo.
+              setTimeout(() => {
+                if (pcRef.current && pcRef.current.connectionState !== 'connected') {
+                  setError('CONEXÃO INSTÁVEL — TENTANDO RESTABELECER');
+                }
+              }, 20000);
               break;
             case 'call-decline':
               setCallState('declined');
@@ -179,7 +200,7 @@ export function CallScreen({
                 await pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
                 const answer = await pc.createAnswer();
                 await pc.setLocalDescription(answer);
-                sendSignaling(roomId, myId, peerId, 'answer', answer).catch(() => {});
+                if (signalChannelRef.current) sendOnChannel(signalChannelRef.current, myId, peerId, 'answer', answer).catch(() => {});
               }
               break;
             case 'answer':
@@ -196,15 +217,16 @@ export function CallScreen({
               break;
           }
         });
+        signalChannelRef.current = unsub;
 
         if (isInitiator) {
           const offer = await pc.createOffer();
           await pc.setLocalDescription(offer);
-          sendSignaling(roomId, myId, peerId, 'offer', offer).catch(() => {});
-          sendSignaling(roomId, myId, peerId, 'call-start', { withVideo }).catch(() => {});
+          if (signalChannelRef.current) sendOnChannel(signalChannelRef.current, myId, peerId, 'offer', offer).catch(() => {});
+          if (signalChannelRef.current) sendOnChannel(signalChannelRef.current, myId, peerId, 'call-start', { withVideo }).catch(() => {});
 
           timeoutRef.current = setTimeout(() => {
-            if (callState === 'calling') {
+            if (callStateRef.current === 'calling') {
               setCallState('no-answer');
               cleanup();
               setTimeout(() => onEnd(), 1500);

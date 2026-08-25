@@ -48,14 +48,19 @@ export function getSignalingChannel(roomId: string) {
   return supabase.channel(`webrtc-${roomId}`);
 }
 
-export async function sendSignaling(
-  roomId: string,
+// Envia um sinal por um canal JÁ inscrito (ver subscribeSignaling). Reusar o
+// mesmo canal em vez de criar um novo a cada envio é essencial aqui: uma
+// chamada troca dezenas de mensagens de "ice candidate" em poucos segundos,
+// e criar um canal novo (não inscrito) a cada uma delas ataca repetidamente
+// o mesmo tópico de tempo real, podendo derrubar ou perder mensagens no meio
+// da negociação — a causa mais provável de chamadas instáveis/que não conectam.
+export async function sendOnChannel(
+  channel: ReturnType<typeof supabase.channel>,
   from: string,
   to: string,
   type: SignalingMessage['type'],
   payload: any,
 ) {
-  const channel = getSignalingChannel(roomId);
   await channel.send({
     type: 'broadcast',
     event: 'signal',

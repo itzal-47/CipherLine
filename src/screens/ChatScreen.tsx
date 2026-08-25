@@ -337,6 +337,37 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
       .subscribe();
   };
 
+  // Rede de segurança: mesmo com a assinatura de tempo real ativa, confere
+  // periodicamente quem está na sala via busca direta — assim, se o realtime
+  // falhar silenciosamente por qualquer motivo, a tela nunca fica presa em
+  // "aguardando participantes" indefinidamente.
+  const reconcileParticipants = async () => {
+    const { data } = await supabase
+      .from('participants')
+      .select('*')
+      .eq('room_id', roomId);
+
+    if (!data) return;
+
+    setPeers((prev) => {
+      const known = new Set(prev.map((p) => p.id));
+      const fresh = data.filter((p) => p.id !== participantId);
+      const newcomers = fresh.filter((p) => !known.has(p.id));
+      newcomers.forEach((p) => {
+        setSystemMessage(`${p.nickname?.toUpperCase() || 'PARTICIPANTE'} CONECTADO`);
+        setTimeout(() => setSystemMessage(''), 3000);
+      });
+      return fresh;
+    });
+    setAllParticipants(data.filter((p) => p.id !== participantId));
+  };
+
+  useEffect(() => {
+    const reconcileInterval = setInterval(reconcileParticipants, 5000);
+    return () => clearInterval(reconcileInterval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId]);
+
   const updateLastSeen = async () => {
     await supabase
       .from('participants')
@@ -356,15 +387,18 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
     setOnlinePeerIds(online);
   };
 
-  // Typing broadcast
+  // Typing broadcast — reutiliza UM único canal inscrito (em vez de criar um
+  // canal novo a cada tecla digitada, que agredia o mesmo tópico repetidamente
+  // e podia desestabilizar outras assinaturas de tempo real da sala).
+  const typingChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+
   const broadcastTyping = useCallback(() => {
-    const channel = supabase.channel(`typing-${roomId}`);
-    channel.send({
+    typingChannelRef.current?.send({
       type: 'broadcast',
       event: 'typing',
       payload: { participantId, nickname, isTyping: true },
     });
-  }, [roomId, participantId, nickname]);
+  }, [participantId, nickname]);
 
   const setupTypingListener = () => {
     const channel = supabase.channel(`typing-${roomId}`);
@@ -385,6 +419,7 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
       typingTimeoutsRef.current.set(data.participantId, timer);
     });
     channel.subscribe();
+    typingChannelRef.current = channel;
   };
 
   useEffect(() => {
@@ -689,9 +724,14 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
 
   const handleDestroy = (id: string) => {
     setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, state: 'destroying' as const } : m)));
-    supabase.from('messages').delete().eq('id', id).then(() => {
+    const target = messages.find((m) => m.id === id);
+    (async () => {
+      if (target?.storagePath) {
+        await supabase.storage.from('cipherline-media').remove([target.storagePath]);
+      }
+      await supabase.from('messages').delete().eq('id', id);
       setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, state: 'destroyed' as const } : m)));
-    });
+    })();
   };
 
   // WebRTC signaling listener for incoming calls
@@ -762,6 +802,17 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
         .select('*', { count: 'exact', head: true })
         .eq('room_id', roomId);
       if (count === 0) {
+        const { data: mediaMsgs } = await supabase
+          .from('messages')
+          .select('storage_path')
+          .eq('room_id', roomId)
+          .not('storage_path', 'is', null);
+
+        if (mediaMsgs && mediaMsgs.length > 0) {
+          const paths = mediaMsgs.map((m) => m.storage_path).filter(Boolean) as string[];
+          await supabase.storage.from('cipherline-media').remove(paths);
+        }
+
         await supabase.from('messages').delete().eq('room_id', roomId);
         await supabase.from('rooms').delete().eq('id', roomId);
       }
