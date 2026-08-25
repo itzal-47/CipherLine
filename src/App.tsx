@@ -229,7 +229,7 @@ export default function App() {
   // Loading state
   if (authLoading) {
     return (
-      <div className="relative h-screen w-screen overflow-hidden bg-cyber-bg">
+      <div className="app-viewport relative w-screen overflow-hidden bg-cyber-bg">
         <Scanlines />
         <div className="flex h-full items-center justify-center">
           <motion.div
@@ -245,7 +245,7 @@ export default function App() {
   }
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden bg-cyber-bg">
+    <div className="app-viewport relative w-screen overflow-hidden bg-cyber-bg">
       <Scanlines />
 
       <AnimatePresence mode="wait">
