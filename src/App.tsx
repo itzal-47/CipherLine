@@ -8,6 +8,7 @@ import { ChatScreen } from '@/screens/ChatScreen';
 import { ExpiredScreen } from '@/screens/ExpiredScreen';
 import { LoginScreen } from '@/screens/LoginScreen';
 import { DashboardScreen } from '@/screens/DashboardScreen';
+import { SettingsScreen } from '@/screens/SettingsScreen';
 import { clearCachedKey } from '@/lib/crypto';
 import { supabase } from '@/lib/supabase';
 import type { Screen, UserProfile } from '@/types';
@@ -58,16 +59,73 @@ export default function App() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [isGuest, setIsGuest] = useState(false);
+  const [suppressScanlines, setSuppressScanlines] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [theme, setThemeState] = useState<'default' | 'overide'>(
+    () => (localStorage.getItem('cipherline_theme') as 'default' | 'overide') || 'default',
+  );
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session: s } }) => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
+  // Aplica a preferência salva na conta assim que o perfil carrega
+  useEffect(() => {
+    if (profile?.theme_preference) {
+      setThemeState(profile.theme_preference as 'default' | 'overide');
+    }
+  }, [profile?.theme_preference]);
+
+  const setTheme = async (next: 'default' | 'overide') => {
+    setThemeState(next);
+    localStorage.setItem('cipherline_theme', next);
+    if (profile) {
+      await supabase.from('profiles').update({ theme_preference: next }).eq('id', profile.id);
+    }
+  };
+
+  useEffect(() => {
+    // As duas verificações de inicialização (sessão de login + sala ativa
+    // salva) rodam em paralelo e são coordenadas aqui antes de decidir a
+    // tela final — evitando que o carregamento do perfil "vença a corrida"
+    // e jogue o usuário de volta pro dashboard mesmo quando ele estava
+    // legitimamente voltando para uma sala aberta (ex: trocou de aba).
+    let cancelled = false;
+
+    const bootstrap = async () => {
+      const [{ data: { session: s } }, restoredChat] = await Promise.all([
+        supabase.auth.getSession(),
+        restoreChatSessionIfValid(),
+      ]);
+
+      if (cancelled) return;
+
       setSession(s);
+
+      let loadedProfile: UserProfile | null = null;
       if (s) {
-        loadProfile(s.user.id);
-      } else {
-        setAuthLoading(false);
+        const { data } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', s.user.id)
+          .maybeSingle();
+        if (cancelled) return;
+        loadedProfile = (data as UserProfile) || null;
+        setProfile(loadedProfile);
       }
-    });
+
+      if (restoredChat) {
+        setChatSession(restoredChat.session);
+        setNickname(restoredChat.nickname);
+        setScreen('chat');
+      } else if (loadedProfile) {
+        setScreen('dashboard');
+      }
+
+      setAuthLoading(false);
+    };
+
+    bootstrap();
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, s) => {
       (async () => {
@@ -82,7 +140,10 @@ export default function App() {
       })();
     });
 
-    return () => listener.subscription.unsubscribe();
+    return () => {
+      cancelled = true;
+      listener.subscription.unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -93,32 +154,55 @@ export default function App() {
     }
   }, [chatSession, nickname]);
 
-  // Restaura a sala ativa (se ainda existir) após reload ou volta de background
+  // Ao voltar de background (troca de aba, minimizar, etc.) sem recarregar
+  // a página inteira, revalida se a sala ainda existe de verdade — o React
+  // pode manter o estado em memória mesmo se o servidor já não reconhece
+  // mais aquele participante, e isso deixava a UI "mentindo" sobre estar
+  // na sala.
   useEffect(() => {
-    const saved = loadChatSession();
-    if (!saved) return;
-
-    (async () => {
+    const handleVisibility = async () => {
+      if (document.visibilityState !== 'visible' || !chatSession) return;
       const { data: participant } = await supabase
         .from('participants')
-        .select('id, room_id')
-        .eq('id', saved.participantId)
+        .select('id')
+        .eq('id', chatSession.participantId)
         .maybeSingle();
-
-      if (participant) {
-        setChatSession({
-          roomId: saved.roomId,
-          roomCode: saved.roomCode,
-          participantId: saved.participantId,
-          isPermanent: saved.isPermanent,
-        });
-        setNickname(saved.nickname);
-        setScreen('chat');
-      } else {
-        clearChatSession();
+      if (!participant) {
+        // A sala/participante não existe mais de verdade — evita deixar o
+        // usuário preso numa tela de chat fantasma.
+        setChatSession(null);
+        setScreen(profile ? 'dashboard' : 'home');
       }
-    })();
-  }, []);
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [chatSession, profile]);
+
+  const restoreChatSessionIfValid = async (): Promise<{ session: ChatSession; nickname: string } | null> => {
+    const saved = loadChatSession();
+    if (!saved) return null;
+
+    const { data: participant } = await supabase
+      .from('participants')
+      .select('id, room_id')
+      .eq('id', saved.participantId)
+      .maybeSingle();
+
+    if (!participant) {
+      clearChatSession();
+      return null;
+    }
+
+    return {
+      session: {
+        roomId: saved.roomId,
+        roomCode: saved.roomCode,
+        participantId: saved.participantId,
+        isPermanent: saved.isPermanent,
+      },
+      nickname: saved.nickname,
+    };
+  };
 
   const loadProfile = async (userId: string) => {
     const { data } = await supabase
@@ -178,12 +262,39 @@ export default function App() {
     setScreen('home');
   };
 
-  const handleDashboardJoinRoom = (roomCode: string, roomId: string, isPermanent: boolean) => {
-    // For logged-in users joining from dashboard, we need a participantId
-    // Generate one via the same mechanism as JoinScreen
-    const tempId = crypto.randomUUID();
-    setNickname(profile?.nickname || 'USER');
-    setChatSession({ roomId, roomCode, participantId: tempId, isPermanent });
+  const handleDashboardJoinRoom = async (roomCode: string, roomId: string, isPermanent: boolean) => {
+    const name = profile?.nickname || 'USER';
+    setNickname(name);
+
+    // Reusa um participante existente com o mesmo apelido nesta sala (mesma
+    // pessoa reconectando), ou cria um novo — nunca inventa um ID que não
+    // existe no banco (isso quebrava a restauração de sessão e deixava
+    // presença "fantasma" quando a pessoa saía).
+    const { data: existing } = await supabase
+      .from('participants')
+      .select('id')
+      .eq('room_id', roomId)
+      .eq('nickname', name)
+      .maybeSingle();
+
+    let participantId: string;
+    if (existing) {
+      await supabase
+        .from('participants')
+        .update({ last_seen: new Date().toISOString() })
+        .eq('id', existing.id);
+      participantId = existing.id;
+    } else {
+      const { data: created, error } = await supabase
+        .from('participants')
+        .insert({ room_id: roomId, nickname: name })
+        .select()
+        .single();
+      if (error || !created) return;
+      participantId = created.id;
+    }
+
+    setChatSession({ roomId, roomCode, participantId, isPermanent });
     setScreen('chat');
   };
 
@@ -246,7 +357,7 @@ export default function App() {
 
   return (
     <div className="app-viewport relative w-screen overflow-hidden bg-cyber-bg">
-      <Scanlines />
+      {!suppressScanlines && <Scanlines />}
 
       <AnimatePresence mode="wait">
         {panicFlash ? (
@@ -280,6 +391,7 @@ export default function App() {
               onJoinRoom={handleDashboardJoinRoom}
               onCreateChannel={handleDashboardCreate}
               onJoinByCode={handleDashboardJoinByCode}
+              onOpenSettings={() => setShowSettings(true)}
             />
           )}
 
@@ -289,6 +401,7 @@ export default function App() {
               onLogin={() => setScreen('login')}
               isGuest={isGuest}
               hasAccount={!!session}
+              onOpenSettings={() => setShowSettings(true)}
             />
           )}
 
@@ -309,6 +422,7 @@ export default function App() {
               onBack={() => (profile ? setScreen('dashboard') : setScreen('home'))}
               onChannelJoined={handleChannelCreated}
               onExpired={handleExpired}
+              userId={profile?.id}
             />
           )}
 
@@ -328,9 +442,32 @@ export default function App() {
               nickname={nickname}
               isPermanent={chatSession.isPermanent}
               onLeave={handleLeave}
+              userId={profile?.id}
+              onSuppressScanlines={setSuppressScanlines}
             />
           )}
         </motion.div>
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showSettings && (
+          <SettingsScreen
+            profile={profile}
+            theme={theme}
+            onSetTheme={setTheme}
+            onClose={() => setShowSettings(false)}
+            onSignOut={() => {
+              setShowSettings(false);
+              handleSignOut();
+            }}
+            onAccountDeleted={() => {
+              setShowSettings(false);
+              setSession(null);
+              setProfile(null);
+              setScreen('home');
+            }}
+          />
+        )}
       </AnimatePresence>
     </div>
   );

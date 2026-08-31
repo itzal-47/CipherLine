@@ -294,13 +294,13 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
+  RETURN QUERY
   SELECT
     r.id,
     r.code,
     r.topic,
     COUNT(rm.id),
     r.created_at
-  INTO v_id, v_code, v_topic, v_member_count, v_created_at
   FROM rooms r
   LEFT JOIN room_members rm ON rm.room_id = r.id
   WHERE r.is_public = true

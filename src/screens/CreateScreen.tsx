@@ -24,8 +24,10 @@ type Visibility = 'private' | 'public';
 export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, userId, userNickname }: CreateScreenProps) {
   const [codeType, setCodeType] = useState<CodeType>('auto');
   const [duration, setDuration] = useState<Duration>('temp');
+  const [deadManDays, setDeadManDays] = useState<number | null>(null);
   const [visibility, setVisibility] = useState<Visibility>('private');
   const [topic, setTopic] = useState('');
+  const [roomName, setRoomName] = useState('');
   const [customCode, setCustomCode] = useState('');
   const [codeStatus, setCodeStatus] = useState<'idle' | 'checking' | 'available' | 'taken'>('idle');
   const [roomCode, setRoomCode] = useState('');
@@ -99,17 +101,32 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
     const createdRoom = Array.isArray(room) ? room[0] : room;
     setRoomId(createdRoom.id);
 
+    if (roomName.trim()) {
+      await supabase
+        .from('rooms')
+        .update({ name: roomName.trim() })
+        .eq('id', createdRoom.id);
+    }
+
     // Set room visibility and topic for logged-in users
     if (userId) {
       await supabase
         .from('rooms')
-        .update({ is_public: isPublic, owner_id: userId, topic: topic || null })
+        .update({ is_public: isPublic, owner_id: userId, topic: topic || null, dead_man_switch_days: isPermanent ? deadManDays : null })
         .eq('id', createdRoom.id);
 
-      // Add to room_members
-      await supabase
+      // Add to room_members — sem isso a sala não aparece depois no
+      // dashboard (Recentes/Públicos/Grupos), então checamos erro de verdade
+      // e tentamos de novo uma vez antes de desistir silenciosamente.
+      const { error: memberErr } = await supabase
         .from('room_members')
         .insert({ room_id: createdRoom.id, user_id: userId, role: 'owner' });
+
+      if (memberErr) {
+        await supabase
+          .from('room_members')
+          .insert({ room_id: createdRoom.id, user_id: userId, role: 'owner' });
+      }
     }
 
     const { data: participant, error: pErr } = await supabase
@@ -221,14 +238,16 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
   }
 
   return (
-    <div className="flex h-full flex-col items-center justify-center px-6">
+    <div className="flex h-full flex-col items-center overflow-y-auto px-6 py-16">
       <button
         onClick={onBack}
-        className="absolute left-4 top-4 flex items-center gap-1 font-mono text-xs tracking-widest text-cyber-text-dim transition-colors hover:text-cyber-red"
+        className="fixed left-4 top-4 z-10 flex items-center gap-1 font-mono text-xs tracking-widest text-cyber-text-dim transition-colors hover:text-cyber-red"
       >
         <X size={14} />
         VOLTAR
       </button>
+
+      <div className="m-auto w-full max-w-md">
 
       <motion.div
         initial={{ opacity: 0, y: -20 }}
@@ -257,6 +276,24 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
         transition={{ duration: 0.5, delay: 0.2 }}
         className="w-full max-w-md space-y-6"
       >
+        {/* Nome do canal */}
+        <div className="glass clip-hud p-5">
+          <div className="mb-3 font-mono text-xs tracking-widest text-cyber-text-dim">
+            NOME DO CANAL
+          </div>
+          <input
+            type="text"
+            value={roomName}
+            onChange={(e) => setRoomName(e.target.value)}
+            maxLength={60}
+            placeholder="Ex: Amigos, Família, Projeto X (opcional)"
+            className="w-full bg-transparent font-mono text-sm text-cyber-green placeholder-cyber-text-faint focus:outline-none"
+          />
+          <p className="mt-2 font-mono text-[10px] text-cyber-text-faint">
+            SÓ APARECE VISUALMENTE — NÃO SUBSTITUI O CÓDIGO DE ACESSO
+          </p>
+        </div>
+
         {/* Code type */}
         <div className="glass clip-hud p-5">
           <div className="mb-3 font-mono text-xs tracking-widest text-cyber-text-dim">
@@ -416,6 +453,39 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
           </div>
         </div>
 
+        {duration === 'permanent' && !isGuest && (
+          <div className="glass clip-hud p-5">
+            <div className="mb-3 font-mono text-xs tracking-widest text-cyber-text-dim">
+              GATILHO DE INATIVIDADE
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { label: 'DESATIVADO', value: null },
+                { label: '30 DIAS', value: 30 },
+                { label: '90 DIAS', value: 90 },
+                { label: '180 DIAS', value: 180 },
+              ].map((opt) => (
+                <button
+                  key={opt.label}
+                  onClick={() => setDeadManDays(opt.value)}
+                  className={`clip-hud-sm px-3 py-2 font-mono text-[10px] tracking-widest transition-colors ${
+                    deadManDays === opt.value
+                      ? 'border border-cyber-amber/40 bg-cyber-amber/10 text-cyber-amber'
+                      : 'border border-cyber-border text-cyber-text-dim hover:text-cyber-text'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <div className="mt-2 font-mono text-[10px] leading-relaxed text-cyber-text-faint">
+              {deadManDays
+                ? `SE NINGUÉM ENVIAR MENSAGEM POR ${deadManDays} DIAS, A SALA E TUDO NELA É APAGADO PERMANENTEMENTE`
+                : 'A SALA NUNCA É APAGADA POR INATIVIDADE'}
+            </div>
+          </div>
+        )}
+
         {/* Create button */}
         <motion.button
           whileHover={canCreate() ? { scale: 1.02 } : {}}
@@ -427,6 +497,7 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
           INICIALIZAR CANAL
         </motion.button>
       </motion.div>
+      </div>
     </div>
   );
 }

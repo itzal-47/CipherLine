@@ -60,6 +60,23 @@ export async function uploadImage(
   return path;
 }
 
+export async function uploadBackgroundImage(
+  ownerId: string,
+  imageBlob: Blob,
+): Promise<string> {
+  const path = `backgrounds/${ownerId}/${Date.now()}.jpg`;
+
+  const { error } = await supabase.storage
+    .from(BUCKET)
+    .upload(path, imageBlob, {
+      contentType: 'image/jpeg',
+      upsert: true,
+    });
+
+  if (error) throw error;
+  return path;
+}
+
 export async function getImageUrl(storagePath: string): Promise<string> {
   const { data } = supabase.storage
     .from(BUCKET)

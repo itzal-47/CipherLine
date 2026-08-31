@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Lock, Plus, LogIn, Terminal, User } from 'lucide-react';
+import { Lock, Plus, LogIn, Terminal, User, Settings as SettingsIcon } from 'lucide-react';
 import { Typewriter } from '@/components/Typewriter';
 
 interface HomeScreenProps {
@@ -8,9 +8,10 @@ interface HomeScreenProps {
   onLogin: () => void;
   isGuest: boolean;
   hasAccount: boolean;
+  onOpenSettings?: () => void;
 }
 
-export function HomeScreen({ onNavigate, onLogin, isGuest, hasAccount }: HomeScreenProps) {
+export function HomeScreen({ onNavigate, onLogin, isGuest, hasAccount, onOpenSettings }: HomeScreenProps) {
   const [nickname, setNickname] = useState('');
   const [error, setError] = useState('');
 
@@ -24,7 +25,17 @@ export function HomeScreen({ onNavigate, onLogin, isGuest, hasAccount }: HomeScr
   };
 
   return (
-    <div className="flex h-full flex-col items-center justify-center px-6">
+    <div className="relative flex h-full flex-col items-center overflow-y-auto px-6 py-16">
+      {onOpenSettings && (
+        <button
+          onClick={onOpenSettings}
+          className="fixed right-4 top-4 z-10 text-cyber-text-dim transition-colors hover:text-cyber-cyan"
+          title="Definições"
+        >
+          <SettingsIcon size={16} />
+        </button>
+      )}
+      <div className="m-auto w-full max-w-md flex flex-col items-center">
       <motion.div
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -122,6 +133,7 @@ export function HomeScreen({ onNavigate, onLogin, isGuest, hasAccount }: HomeScr
           </motion.div>
         )}
       </motion.div>
+      </div>
 
       <motion.div
         initial={{ opacity: 0 }}

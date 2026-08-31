@@ -1,21 +1,19 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Lock, Clock, Trash2, Check, CheckCheck, ImageIcon, AudioLines, Reply, UserRound } from 'lucide-react';
-import { scrambleText } from '@/lib/scramble';
-import { playDecodeSound, playDestroySound } from '@/lib/audio';
+import { playDestroySound } from '@/lib/audio';
+import { getImageUrl } from '@/lib/media';
+import { CapsuleContent } from '@/components/CapsuleContent';
 import type { DecodedMessage, Reaction } from '@/types';
 
 const AudioPlayer = lazy(() => import('@/components/AudioPlayer').then(m => ({ default: m.AudioPlayer })));
 const ImageViewer = lazy(() => import('@/components/ImageViewer').then(m => ({ default: m.ImageViewer })));
 
-const DECODE_DURATION = 600;
 const QUICK_EMOJIS = ['👍', '🔥', '😂', '😮'];
 
 interface ChatMessageProps {
   message: DecodedMessage;
   roomCode: string;
-  onDecode: (id: string) => void;
-  onDecodeComplete: (id: string) => void;
   onDestroy: (id: string) => void;
   onReact: (messageId: string, emoji: string) => void;
   onReply: (message: DecodedMessage) => void;
@@ -23,16 +21,21 @@ interface ChatMessageProps {
   onScrollToMessage: (messageId: string) => void;
 }
 
-export function ChatMessage({ message, roomCode, onDecode, onDecodeComplete, onDestroy, onReact, onReply, onReplyPrivate, onScrollToMessage }: ChatMessageProps) {
+export function ChatMessage({ message, roomCode, onDestroy, onReact, onReply, onReplyPrivate, onScrollToMessage }: ChatMessageProps) {
   const [displayText, setDisplayText] = useState('');
   const [destroyCountdown, setDestroyCountdown] = useState(0);
   const [showReactions, setShowReactions] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const [showActions, setShowActions] = useState(false);
   const [showImageViewer, setShowImageViewer] = useState(false);
+  const [thumbUrl, setThumbUrl] = useState('');
+
+  useEffect(() => {
+    if (message.messageType === 'image' && message.storagePath) {
+      getImageUrl(message.storagePath).then(setThumbUrl).catch(() => {});
+    }
+  }, [message.messageType, message.storagePath]);
   const [longPressTimer, setLongPressTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
-  const rafRef = useRef<number | null>(null);
-  const decodeStartRef = useRef<number | null>(null);
   const lastTapRef = useRef<number>(0);
   const destroyTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -41,52 +44,7 @@ export function ChatMessage({ message, roomCode, onDecode, onDecodeComplete, onD
   const isText = message.messageType === 'text';
   const isAudio = message.messageType === 'audio';
   const isImage = message.messageType === 'image';
-
-  // Scrambled state: animate random characters
-  useEffect(() => {
-    if (message.state !== 'scrambled') return;
-    let mounted = true;
-    const tick = () => {
-      if (!mounted) return;
-      const baseLen = Math.max(message.encryptedContent.length, 20);
-      const len = Math.min(baseLen, 60);
-      const chars = '!@#$%^&*()_+-=[]{}|;:,.<>?/~01ΞΛΦΨΩΣΔΓΘΠ';
-      let s = '';
-      for (let i = 0; i < len; i++) {
-        s += chars[Math.floor(Math.random() * chars.length)];
-      }
-      setDisplayText(s);
-    };
-    const interval = setInterval(tick, 80);
-    return () => {
-      mounted = false;
-      clearInterval(interval);
-    };
-  }, [message.state, message.encryptedContent]);
-
-  // Decoding state: progressive resolve
-  useEffect(() => {
-    if (message.state !== 'decoding') return;
-    playDecodeSound();
-    decodeStartRef.current = performance.now();
-    const target = message.plaintext;
-    const animate = () => {
-      const elapsed = performance.now() - (decodeStartRef.current ?? 0);
-      const progress = Math.min(elapsed / DECODE_DURATION, 1);
-      setDisplayText(scrambleText(target, progress));
-      if (progress < 1) {
-        rafRef.current = requestAnimationFrame(animate);
-      } else {
-        setDisplayText(target);
-        onDecodeComplete(message.id);
-      }
-    };
-    rafRef.current = requestAnimationFrame(animate);
-    return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [message.state]);
+  const isCapsule = message.messageType === 'capsule';
 
   // Decoded state: countdown to self-destruct (only if burn is active)
   useEffect(() => {
@@ -109,25 +67,23 @@ export function ChatMessage({ message, roomCode, onDecode, onDecodeComplete, onD
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [message.state, message.destroyAt]);
 
-  // Initialize display text for own messages (which start decoded)
+  // Inicializa o texto exibido assim que a mensagem chega já decodificada
+  // (tanto enviada quanto recebida — não existe mais a etapa de "tocar para
+  // decodificar").
   useEffect(() => {
-    if (message.state === 'decoded' && message.isOwn && !displayText) {
+    if (message.state === 'decoded' && !displayText) {
       setDisplayText(message.plaintext);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [message.state, message.plaintext]);
 
   if (message.state === 'destroyed') return null;
 
-  const isScrambled = message.state === 'scrambled';
-  const isDecoding = message.state === 'decoding';
+  const isScrambled = false;
+  const isDecoding = false;
   const isDecoded = message.state === 'decoded';
 
   const handleClick = () => {
-    if (isScrambled) {
-      onDecode(message.id);
-      return;
-    }
     if (isDecoded) {
       const now = Date.now();
       if (now - lastTapRef.current < 350) {
@@ -230,7 +186,7 @@ export function ChatMessage({ message, roomCode, onDecode, onDecodeComplete, onD
             className="relative overflow-hidden clip-hud-sm"
           >
             <img
-              src={`https://yklzzvitnhpkqzfsvvwy.supabase.co/storage/v1/object/public/cipherline-media/${message.storagePath}`}
+              src={thumbUrl}
               alt="img"
               className="max-h-64 w-full cursor-pointer object-cover"
               onClick={(e) => {
@@ -247,6 +203,9 @@ export function ChatMessage({ message, roomCode, onDecode, onDecodeComplete, onD
           </motion.div>
         </div>
       );
+    }
+    if (isCapsule) {
+      return <CapsuleContent message={message} />;
     }
     // Text
     return (

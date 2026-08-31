@@ -1,5 +1,4 @@
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
-import { SMTPClient } from "npm:denomailer@1.6.0";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -40,33 +39,25 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // Send the code via Gmail SMTP (works for any recipient, no domain needed)
-    const gmailUser = Deno.env.get("GMAIL_USER");
-    const gmailAppPassword = Deno.env.get("GMAIL_APP_PASSWORD");
-
-    if (!gmailUser || !gmailAppPassword) {
+    // Send the code via Resend (HTTP API — works on Supabase Edge Functions,
+    // unlike raw SMTP which is blocked on ports 25/465/587)
+    const resendApiKey = Deno.env.get("RESEND_API_KEY");
+    if (!resendApiKey) {
       return new Response(
-        JSON.stringify({ error: "GMAIL_USER or GMAIL_APP_PASSWORD not configured" }),
+        JSON.stringify({ error: "RESEND_API_KEY not configured" }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    const client = new SMTPClient({
-      connection: {
-        hostname: "smtp.gmail.com",
-        port: 465,
-        tls: true,
-        auth: {
-          username: gmailUser,
-          password: gmailAppPassword,
-        },
+    const resendResponse = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${resendApiKey}`,
+        "Content-Type": "application/json",
       },
-    });
-
-    try {
-      await client.send({
-        from: `CipherLine <${gmailUser}>`,
-        to: email,
+      body: JSON.stringify({
+        from: "CipherLine <onboarding@resend.dev>",
+        to: [email],
         subject: "Código de Verificação — CipherLine",
         html: `
           <div style="font-family: monospace; background: #0a0e0a; color: #00ff41; padding: 40px; text-align: center;">
@@ -78,11 +69,13 @@ Deno.serve(async (req: Request) => {
             <p style="color: #666; font-size: 11px;">Este código expira em 10 minutos.</p>
           </div>
         `,
-      });
-      await client.close();
-    } catch (smtpErr) {
+      }),
+    });
+
+    if (!resendResponse.ok) {
+      const errText = await resendResponse.text();
       return new Response(
-        JSON.stringify({ error: `Failed to send email: ${(smtpErr as Error).message}` }),
+        JSON.stringify({ error: `Failed to send email: ${errText}` }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }

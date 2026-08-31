@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Phone, PhoneOff, Mic, MicOff, Video, VideoOff, Camera, CameraOff, AlertTriangle } from 'lucide-react';
+import { Phone, PhoneOff, Mic, MicOff, Video, VideoOff, Camera, CameraOff, AlertTriangle, X } from 'lucide-react';
 import {
   createPeerConnection,
   sendOnChannel,
@@ -20,7 +20,7 @@ interface CallScreenProps {
   peerNickname: string;
   withVideo: boolean;
   isInitiator: boolean;
-  onEnd: () => void;
+  onEnd: (reason?: 'failed') => void;
 }
 
 const CALL_TIMEOUT_MS = 30000;
@@ -37,9 +37,19 @@ export function CallScreen({
   const [callState, setCallState] = useState<CallState>(isInitiator ? 'calling' : 'ringing');
   const [muted, setMuted] = useState(false);
   const [videoOff, setVideoOff] = useState(false);
+  const videoOffRef = useRef(videoOff);
+  useEffect(() => {
+    videoOffRef.current = videoOff;
+  }, [videoOff]);
   const [duration, setDuration] = useState(0);
   const [error, setError] = useState('');
   const [audioLevel, setAudioLevel] = useState(0);
+  const [callQuality, setCallQuality] = useState<'good' | 'fair' | 'poor' | null>(null);
+  const [suggestAudioOnly, setSuggestAudioOnly] = useState(false);
+  const poorStreakRef = useRef(0);
+  const statsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastPacketsLostRef = useRef(0);
+  const lastPacketsReceivedRef = useRef(0);
 
   // Mantém o valor mais recente de callState acessível dentro de callbacks
   // "congelados" (como o setTimeout de 30s abaixo), que de outra forma só
@@ -61,6 +71,8 @@ export function CallScreen({
   const analyserRef = useRef<AnalyserNode | null>(null);
   const rafRef = useRef<number | null>(null);
   const signalChannelRef = useRef<ReturnType<typeof subscribeSignaling> | null>(null);
+  const iceRestartAttemptsRef = useRef(0);
+  const disconnectGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const cleanup = useCallback(() => {
     if (pcRef.current) {
@@ -73,6 +85,11 @@ export function CallScreen({
     }
     if (timerRef.current) clearInterval(timerRef.current);
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    if (statsIntervalRef.current) clearInterval(statsIntervalRef.current);
+    if (disconnectGraceTimerRef.current) {
+      clearTimeout(disconnectGraceTimerRef.current);
+      disconnectGraceTimerRef.current = null;
+    }
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     if (audioContextRef.current) {
       audioContextRef.current.close();
@@ -136,6 +153,47 @@ export function CallScreen({
         const pc = createPeerConnection();
         pcRef.current = pc;
 
+        // Monitora qualidade da ligação a cada ~3s (perda de pacotes) para
+        // alimentar o indicador visual e a sugestão de modo de emergência.
+        statsIntervalRef.current = setInterval(async () => {
+          if (!pcRef.current) return;
+          try {
+            const stats = await pcRef.current.getStats();
+            let packetsLost = 0;
+            let packetsReceived = 0;
+            stats.forEach((report) => {
+              if (report.type === 'inbound-rtp' && !report.isRemote) {
+                packetsLost += report.packetsLost || 0;
+                packetsReceived += report.packetsReceived || 0;
+              }
+            });
+            const deltaLost = packetsLost - lastPacketsLostRef.current;
+            const deltaReceived = packetsReceived - lastPacketsReceivedRef.current;
+            lastPacketsLostRef.current = packetsLost;
+            lastPacketsReceivedRef.current = packetsReceived;
+            const total = deltaLost + deltaReceived;
+            if (total > 0) {
+              const lossRatio = deltaLost / total;
+              if (lossRatio > 0.15) {
+                setCallQuality('poor');
+                poorStreakRef.current += 1;
+                if (poorStreakRef.current >= 4 && withVideo && !videoOffRef.current) {
+                  setSuggestAudioOnly(true);
+                }
+              } else if (lossRatio > 0.05) {
+                setCallQuality('fair');
+                poorStreakRef.current = 0;
+              } else {
+                setCallQuality('good');
+                poorStreakRef.current = 0;
+                setSuggestAudioOnly(false);
+              }
+            }
+          } catch {
+            // getStats indisponível — sem indicador, sem problema
+          }
+        }, 3000);
+
         stream.getTracks().forEach((track) => {
           pc.addTrack(track, stream);
         });
@@ -156,14 +214,61 @@ export function CallScreen({
           }
         };
 
+        const MAX_ICE_RESTART_ATTEMPTS = 3;
+
+        const attemptIceRestart = async () => {
+          if (iceRestartAttemptsRef.current >= MAX_ICE_RESTART_ATTEMPTS) {
+            setCallState('failed');
+            setError('REDE INSTÁVEL — CHAMADA ENCERRADA');
+            setTimeout(() => onEnd('failed'), 2000);
+            return;
+          }
+          iceRestartAttemptsRef.current += 1;
+          try {
+            pc.restartIce();
+            if (isInitiator) {
+              const offer = await pc.createOffer({ iceRestart: true });
+              await pc.setLocalDescription(offer);
+              if (signalChannelRef.current) {
+                await sendOnChannel(signalChannelRef.current, myId, peerId, 'offer', offer);
+              }
+            }
+          } catch {
+            // tenta de novo no próximo ciclo de disconnected/failed
+          }
+        };
+
         pc.onconnectionstatechange = () => {
           if (pc.connectionState === 'connected') {
+            iceRestartAttemptsRef.current = 0;
+            if (disconnectGraceTimerRef.current) {
+              clearTimeout(disconnectGraceTimerRef.current);
+              disconnectGraceTimerRef.current = null;
+            }
             setCallState('connected');
+            setError('');
             if (timeoutRef.current) clearTimeout(timeoutRef.current);
-            timerRef.current = setInterval(() => setDuration((d) => d + 1), 1000);
-          } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-            setCallState('failed');
-            setError('CONEXÃO PERDIDA');
+            if (!timerRef.current) {
+              timerRef.current = setInterval(() => setDuration((d) => d + 1), 1000);
+            }
+          } else if (pc.connectionState === 'disconnected') {
+            // 'disconnected' é frequentemente transitório (troca de rede,
+            // instabilidade momentânea) — dá uma folga curta pra ver se o
+            // ICE se recupera sozinho antes de intervir.
+            setCallState('reconnecting');
+            setError('CONEXÃO INSTÁVEL — RECONECTANDO...');
+            if (!disconnectGraceTimerRef.current) {
+              disconnectGraceTimerRef.current = setTimeout(() => {
+                disconnectGraceTimerRef.current = null;
+                if (pc.connectionState !== 'connected') {
+                  attemptIceRestart();
+                }
+              }, 3000);
+            }
+          } else if (pc.connectionState === 'failed') {
+            setCallState('reconnecting');
+            setError('CONEXÃO INSTÁVEL — RECONECTANDO...');
+            attemptIceRestart();
           }
         };
 
@@ -271,6 +376,7 @@ export function CallScreen({
     calling: 'CHAMANDO...',
     ringing: 'TOCANDO...',
     connected: 'CONECTADO',
+    reconnecting: 'RECONECTANDO...',
     ended: 'CHAMADA ENCERRADA',
     declined: 'CHAMADA RECUSADA',
     'no-answer': 'SEM RESPOSTA',
@@ -313,15 +419,61 @@ export function CallScreen({
           <div className="font-mono text-xs tracking-widest text-cyber-text-dim">
             {stateLabels[callState]}
           </div>
-          {callState === 'connected' && (
-            <div className="mt-1 font-mono text-sm text-cyber-cyan">
+          {(callState === 'connected' || callState === 'reconnecting') && (
+            <div className="mt-1 flex items-center justify-center gap-2 font-mono text-sm text-cyber-cyan">
               {formatDuration(duration)}
+              {callQuality && (
+                <span className="flex items-end gap-0.5" title={`Qualidade: ${callQuality}`}>
+                  {[1, 2, 3].map((bar) => {
+                    const active =
+                      callQuality === 'good' ? 3 : callQuality === 'fair' ? 2 : 1;
+                    const color =
+                      callQuality === 'good'
+                        ? 'bg-cyber-green'
+                        : callQuality === 'fair'
+                          ? 'bg-cyber-amber'
+                          : 'bg-red-400';
+                    return (
+                      <span
+                        key={bar}
+                        className={`w-1 rounded-sm ${bar <= active ? color : 'bg-cyber-text-dim/20'}`}
+                        style={{ height: `${bar * 3 + 2}px` }}
+                      />
+                    );
+                  })}
+                </span>
+              )}
             </div>
           )}
         </div>
 
+        {suggestAudioOnly && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="flex items-center gap-3 border border-cyber-amber/40 bg-cyber-amber/10 px-4 py-2 font-mono text-xs text-cyber-amber"
+          >
+            <span>REDE FRACA — DESLIGAR VÍDEO MELHORA A LIGAÇÃO?</span>
+            <button
+              onClick={() => {
+                toggleVideo();
+                setSuggestAudioOnly(false);
+              }}
+              className="shrink-0 border border-cyber-amber/60 px-2 py-1 tracking-widest hover:bg-cyber-amber/20"
+            >
+              DESLIGAR
+            </button>
+            <button
+              onClick={() => setSuggestAudioOnly(false)}
+              className="shrink-0 text-cyber-text-dim hover:text-cyber-text"
+            >
+              <X size={14} />
+            </button>
+          </motion.div>
+        )}
+
         {/* Audio level indicator */}
-        {callState === 'connected' && !withVideo && (
+        {(callState === 'connected' || callState === 'reconnecting') && !withVideo && (
           <div className="flex h-16 items-end gap-1">
             {Array.from({ length: 20 }).map((_, i) => (
               <motion.div

@@ -6,7 +6,7 @@ export function StatusDot({ online, size = 8 }: { online: boolean; size?: number
       <motion.span
         className="absolute inset-0 rounded-full"
         style={{
-          backgroundColor: online ? '#00ff9d' : '#3a3a4e',
+          backgroundColor: online ? 'rgb(var(--cyber-green))' : '#3a3a4e',
         }}
         animate={
           online
@@ -29,7 +29,7 @@ export function StatusDot({ online, size = 8 }: { online: boolean; size?: number
         style={{
           width: size,
           height: size,
-          backgroundColor: online ? '#00ff9d' : '#3a3a4e',
+          backgroundColor: online ? 'rgb(var(--cyber-green))' : '#3a3a4e',
           boxShadow: online ? '0 0 6px rgba(0,255,157,0.8)' : 'none',
         }}
       />

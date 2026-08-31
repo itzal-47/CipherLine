@@ -10,15 +10,41 @@ interface JoinScreenProps {
   onBack: () => void;
   onChannelJoined: (roomId: string, roomCode: string, participantId: string, isPermanent: boolean) => void;
   onExpired: (roomCode: string) => void;
+  userId?: string;
 }
 
-export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired }: JoinScreenProps) {
+export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired, userId }: JoinScreenProps) {
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
   const sanitizeCode = (raw: string): string => {
     return raw.toUpperCase().replace(/[^A-Z0-9-]/g, '');
+  };
+
+  // Garante que a sala fica salva no dashboard de um usuário logado, mesmo
+  // quando ele entra por código em vez de criar a sala — sem isso, salas
+  // acessadas por código nunca apareciam de novo depois de sair.
+  const ensureRoomMembership = async (roomId: string) => {
+    if (!userId) return;
+    const { data: existing } = await supabase
+      .from('room_members')
+      .select('id')
+      .eq('room_id', roomId)
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (!existing) {
+      const { error } = await supabase
+        .from('room_members')
+        .insert({ room_id: roomId, user_id: userId, role: 'member' });
+      if (error) {
+        // tenta mais uma vez antes de desistir — sem isso a sala não
+        // aparece depois no dashboard
+        await supabase
+          .from('room_members')
+          .insert({ room_id: roomId, user_id: userId, role: 'member' });
+      }
+    }
   };
 
   const handleJoin = async () => {
@@ -51,6 +77,27 @@ export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired }: Joi
     const room = roomData[0];
     const isPermanent = room.is_permanent ?? false;
 
+    // Gatilho de inatividade: se o criador configurou autodestruição por
+    // inatividade e o prazo já passou, a sala é destruída aqui mesmo, antes
+    // de deixar qualquer um entrar.
+    const { data: mediaMsgs } = await supabase
+      .from('messages')
+      .select('storage_path')
+      .eq('room_id', room.id)
+      .not('storage_path', 'is', null);
+    const { data: wasWiped } = await supabase.rpc('check_and_wipe_if_inactive', {
+      p_room_id: room.id,
+    });
+    if (wasWiped) {
+      if (mediaMsgs && mediaMsgs.length > 0) {
+        const paths = mediaMsgs.map((m) => m.storage_path).filter(Boolean) as string[];
+        await supabase.storage.from('cipherline-media').remove(paths);
+      }
+      onExpired(trimmed);
+      setLoading(false);
+      return;
+    }
+
     // Multi-device sync: check if we already have a participant_id for this room+nickname
     const savedParticipantId = getSavedParticipantId(trimmed, nickname);
     if (savedParticipantId) {
@@ -67,6 +114,7 @@ export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired }: Joi
           .from('participants')
           .update({ last_seen: new Date().toISOString(), device_id: getDeviceId() })
           .eq('id', savedParticipantId);
+        await ensureRoomMembership(room.id);
         onChannelJoined(room.id, room.code, savedParticipantId, isPermanent);
         return;
       }
@@ -87,6 +135,7 @@ export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired }: Joi
         .update({ last_seen: new Date().toISOString(), device_id: getDeviceId() })
         .eq('id', existingParticipant.id);
       saveParticipantId(trimmed, nickname, existingParticipant.id);
+      await ensureRoomMembership(room.id);
       onChannelJoined(room.id, room.code, existingParticipant.id, isPermanent);
       return;
     }
@@ -104,6 +153,7 @@ export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired }: Joi
     }
 
     saveParticipantId(trimmed, nickname, participant.id);
+    await ensureRoomMembership(room.id);
     onChannelJoined(room.id, room.code, participant.id, isPermanent);
   };
 

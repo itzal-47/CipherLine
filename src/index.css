@@ -12,6 +12,49 @@
   box-sizing: border-box;
 }
 
+:root,
+[data-theme='default'] {
+  --cyber-bg: 10 10 15;
+  --cyber-panel: 15 15 23;
+  --cyber-panel-2: 18 18 29;
+  --cyber-border: 26 26 46;
+  --cyber-green: 0 255 157;
+  --cyber-green-dim: 0 204 125;
+  --cyber-green-glow: rgba(0, 255, 157, 0.15);
+  --cyber-cyan: 0 229 255;
+  --cyber-cyan-dim: 0 184 204;
+  --cyber-cyan-glow: rgba(0, 229, 255, 0.15);
+  --cyber-magenta: 255 0 255;
+  --cyber-red: 255 51 102;
+  --cyber-red-dim: 204 41 82;
+  --cyber-amber: 255 170 0;
+  --cyber-text: 200 255 217;
+  --cyber-text-dim: 90 138 110;
+  --cyber-text-faint: 42 74 54;
+}
+
+/* Tema "Over Ride" — a mesma paleta vibrante da tela de login, disponível
+   como opção para a plataforma inteira. */
+[data-theme='overide'] {
+  --cyber-bg: 10 10 20;
+  --cyber-panel: 18 8 31;
+  --cyber-panel-2: 26 15 46;
+  --cyber-border: 42 26 62;
+  --cyber-green: 0 255 65;
+  --cyber-green-dim: 0 204 52;
+  --cyber-green-glow: rgba(0, 255, 65, 0.18);
+  --cyber-cyan: 0 255 255;
+  --cyber-cyan-dim: 0 204 204;
+  --cyber-cyan-glow: rgba(0, 255, 255, 0.18);
+  --cyber-magenta: 255 0 255;
+  --cyber-red: 255 51 102;
+  --cyber-red-dim: 204 41 82;
+  --cyber-amber: 255 170 0;
+  --cyber-text: 232 249 255;
+  --cyber-text-dim: 138 154 184;
+  --cyber-text-faint: 74 58 94;
+}
+
 html,
 body,
 #root {

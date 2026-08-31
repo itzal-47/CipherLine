@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Plus, LogOut, Hash, Lock, Users, Archive, Pin, BellOff, MessageSquare, ChevronRight, Clock } from 'lucide-react';
+import { Search, Plus, LogOut, Hash, Lock, Users, Archive, Pin, BellOff, MessageSquare, ChevronRight, Clock, Settings as SettingsIcon } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import type { UserProfile, RoomMember, PublicRoom } from '@/types';
 
@@ -10,6 +10,7 @@ interface DashboardScreenProps {
   onJoinRoom: (roomCode: string, roomId: string, isPermanent: boolean) => void;
   onCreateChannel: () => void;
   onJoinByCode: (code: string) => void;
+  onOpenSettings: () => void;
 }
 
 type Tab = 'recentes' | 'publicos' | 'grupos' | 'privado';
@@ -29,7 +30,7 @@ interface RoomPreview {
   topic: string | null;
 }
 
-export function DashboardScreen({ profile, onSignOut, onJoinRoom, onCreateChannel, onJoinByCode }: DashboardScreenProps) {
+export function DashboardScreen({ profile, onSignOut, onJoinRoom, onCreateChannel, onJoinByCode, onOpenSettings }: DashboardScreenProps) {
   const [tab, setTab] = useState<Tab>('recentes');
   const [search, setSearch] = useState('');
   const [rooms, setRooms] = useState<RoomMember[]>([]);
@@ -52,7 +53,7 @@ export function DashboardScreen({ profile, onSignOut, onJoinRoom, onCreateChanne
       .from('room_members')
       .select(`
         *,
-        rooms!inner(id, code, is_public, topic, is_permanent)
+        rooms!inner(id, code, name, is_public, topic, is_permanent)
       `)
       .eq('user_id', profile.id);
 
@@ -85,7 +86,7 @@ export function DashboardScreen({ profile, onSignOut, onJoinRoom, onCreateChanne
       map.set(roomData.id, {
         roomId: roomData.id,
         roomCode: roomData.code,
-        roomName: roomData.code,
+        roomName: roomData.name || roomData.code,
         lastMessage: stored?.lastMessage || '',
         lastMessageAt: stored?.lastMessageAt || '',
         unreadCount: stored?.unreadCount || 0,
@@ -105,9 +106,14 @@ export function DashboardScreen({ profile, onSignOut, onJoinRoom, onCreateChanne
   }, [loadPreviews]);
 
   const handleJoinPublic = async (room: PublicRoom) => {
-    await supabase
+    const { error } = await supabase
       .from('room_members')
       .insert({ room_id: room.id, user_id: profile.id, role: 'member' });
+    if (error) {
+      await supabase
+        .from('room_members')
+        .insert({ room_id: room.id, user_id: profile.id, role: 'member' });
+    }
     onJoinRoom(room.code, room.id, true);
   };
 
@@ -229,6 +235,13 @@ export function DashboardScreen({ profile, onSignOut, onJoinRoom, onCreateChanne
           </span>
         </div>
         <div className="flex items-center gap-3">
+          <button
+            onClick={onOpenSettings}
+            className="font-mono text-[10px] tracking-widest text-cyber-text-dim transition-colors hover:text-cyber-cyan"
+            title="Definições"
+          >
+            <SettingsIcon size={14} />
+          </button>
           <button
             onClick={() => setShowArchived(true)}
             className="font-mono text-[10px] tracking-widest text-cyber-text-dim transition-colors hover:text-cyber-cyan"

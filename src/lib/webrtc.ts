@@ -7,13 +7,14 @@ export type CallState =
   | 'calling'
   | 'ringing'
   | 'connected'
+  | 'reconnecting'
   | 'ended'
   | 'declined'
   | 'no-answer'
   | 'failed';
 
 export interface SignalingMessage {
-  type: 'offer' | 'answer' | 'ice' | 'call-start' | 'call-accept' | 'call-decline' | 'call-end' | 'call-timeout';
+  type: 'offer' | 'answer' | 'ice' | 'call-start' | 'call-accept' | 'call-decline' | 'call-end' | 'call-timeout' | 'call-join' | 'call-leave';
   payload: any;
   from: string;
   to: string;

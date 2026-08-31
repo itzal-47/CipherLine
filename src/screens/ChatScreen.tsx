@@ -1,23 +1,26 @@
 import { useCallback, useEffect, useRef, useState, lazy, Suspense } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { LogOut, ArrowDown, Send, AlertTriangle, Settings, Lock, Clock, X, Users, Smartphone, Monitor, Mic, Image as ImageIcon, Phone, Video, Reply, XCircle } from 'lucide-react';
+import { LogOut, ArrowDown, Send, AlertTriangle, Settings, Lock, Clock, X, Users, Smartphone, Monitor, Mic, Image as ImageIcon, Phone, Video, Reply, XCircle, WifiOff, Sparkles, FileText } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { encryptText, decryptText } from '@/lib/crypto';
 import { playSendSound, playReceiveSound } from '@/lib/audio';
 import { getDeviceId } from '@/lib/device';
 import { requestNotificationPermission, subscribeToPush, unsubscribeFromPush } from '@/lib/push';
-import { uploadEncryptedAudio, uploadImage } from '@/lib/media';
+import { uploadEncryptedAudio, uploadImage, uploadBackgroundImage, getImageUrl, deleteStorageFile } from '@/lib/media';
 import { StatusDot } from '@/components/StatusDot';
 import { CopyButton } from '@/components/CopyButton';
 import { Typewriter } from '@/components/Typewriter';
 import { ChatMessage } from '@/components/ChatMessage';
 import { AudioRecorder } from '@/components/AudioRecorder';
 import { ImageUploader } from '@/components/ImageUploader';
+import { CapsuleComposer } from '@/components/CapsuleComposer';
+import { ChatBackground, type BackgroundMode } from '@/components/ChatBackground';
 import { jsonToBurnConfig, createBurnConfig } from '@/types';
 import type { DecodedMessage, Participant, Reaction, ReadReceipt, BurnConfig, MessageType } from '@/types';
 
 const CallScreen = lazy(() => import('@/components/CallScreen').then(m => ({ default: m.CallScreen })));
-import { subscribeSignaling, type SignalingMessage } from '@/lib/webrtc';
+const GroupCallScreen = lazy(() => import('@/components/GroupCallScreen').then(m => ({ default: m.GroupCallScreen })));
+import { subscribeSignaling, sendOnChannel, type SignalingMessage } from '@/lib/webrtc';
 
 interface ChatScreenProps {
   roomId: string;
@@ -26,6 +29,8 @@ interface ChatScreenProps {
   nickname: string;
   isPermanent: boolean;
   onLeave: () => void;
+  userId?: string;
+  onSuppressScanlines?: (suppress: boolean) => void;
 }
 
 const PRESENCE_INTERVAL = 10000;
@@ -50,7 +55,7 @@ function vibrate(pattern: number | number[]) {
   }
 }
 
-export function ChatScreen({ roomId, roomCode, participantId, nickname, isPermanent, onLeave }: ChatScreenProps) {
+export function ChatScreen({ roomId, roomCode, participantId, nickname, isPermanent, onLeave, userId, onSuppressScanlines }: ChatScreenProps) {
   const [messages, setMessages] = useState<DecodedMessage[]>([]);
   const [input, setInput] = useState('');
   const [peers, setPeers] = useState<Participant[]>([]);
@@ -60,6 +65,22 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
   const [autoScroll, setAutoScroll] = useState(true);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [showBurnSettings, setShowBurnSettings] = useState(false);
+  const [bgUrl, setBgUrl] = useState<string | null>(null);
+  const [bgMode, setBgMode] = useState<BackgroundMode>('default');
+  const [showBgSettings, setShowBgSettings] = useState(false);
+  const [bgStep, setBgStep] = useState<'menu' | 'upload' | 'mode' | 'scope'>('menu');
+  const [pendingBgBlob, setPendingBgBlob] = useState<Blob | null>(null);
+  const [pendingBgMode, setPendingBgMode] = useState<BackgroundMode>('default');
+  const [bgSaving, setBgSaving] = useState(false);
+  const [pulseKey, setPulseKey] = useState(0);
+  const [roomName, setRoomName] = useState('');
+  const [eivorakThinking, setEivorakThinking] = useState(false);
+  const [showPaste, setShowPaste] = useState(false);
+  const [pasteContent, setPasteContent] = useState('');
+  const [pasteSaving, setPasteSaving] = useState(false);
+  const pasteTextareaFocusedRef = useRef(false);
+  const pasteSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [showCapsuleComposer, setShowCapsuleComposer] = useState(false);
   const [showParticipantPanel, setShowParticipantPanel] = useState(false);
   const [burnConfig, setBurnConfig] = useState<BurnConfig>({ mode: 'off', seconds: 0 });
   const [customBurnValue, setCustomBurnValue] = useState('');
@@ -71,12 +92,20 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
   const [showImageUploader, setShowImageUploader] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [activeCall, setActiveCall] = useState<{ peerId: string; peerNickname: string; withVideo: boolean; isInitiator: boolean } | null>(null);
+  const [activeGroupCall, setActiveGroupCall] = useState<{ withVideo: boolean } | null>(null);
+  const [groupCallInvite, setGroupCallInvite] = useState<{ withVideo: boolean } | null>(null);
   const [incomingCall, setIncomingCall] = useState<{ from: string; fromNickname: string; withVideo: boolean } | null>(null);
   const [replyTo, setReplyTo] = useState<DecodedMessage | null>(null);
   const webrtcChannelRef = useRef<any>(null);
+  const [connectionStatus, setConnectionStatus] = useState<'connected' | 'reconnecting' | 'offline'>('connected');
+  const chatChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const connectionGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const typingTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const presenceIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const presenceCheckRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -85,6 +114,29 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
   // Load existing messages + participants + room burn config
   useEffect(() => {
     loadInitialData();
+    loadBackground();
+    loadPaste();
+    supabase.from('rooms').select('name').eq('id', roomId).maybeSingle().then(({ data }) => {
+      if (data?.name) setRoomName(data.name);
+    });
+
+    const pasteChannel = supabase
+      .channel(`paste-${roomId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'room_pastes', filter: `room_id=eq.${roomId}` },
+        async (payload: any) => {
+          // Não sobrescreve o que a pessoa está digitando agora mesmo
+          if (pasteTextareaFocusedRef.current) return;
+          const encrypted = payload.new?.encrypted_content;
+          if (encrypted) {
+            const plain = await decryptText(encrypted, roomCode);
+            if (plain !== '[DECRYPT_FAILED]') setPasteContent(plain);
+          }
+        },
+      )
+      .subscribe();
+
     setupRealtime();
     setupPresence();
     updateLastSeen();
@@ -92,20 +144,199 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
     presenceIntervalRef.current = setInterval(updateLastSeen, PRESENCE_INTERVAL);
     presenceCheckRef.current = setInterval(checkOnlineStatus, PRESENCE_CHECK_INTERVAL);
 
+    const handleOffline = () => setConnectionStatus('offline');
+    const handleOnline = () => {
+      // Rede voltou — força reconexão imediata em vez de esperar o próximo
+      // passo do backoff, que pode levar até 15s.
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      setConnectionStatus('reconnecting');
+      supabase.channel(`chat-${roomId}`).unsubscribe();
+      supabase.channel(`reactions-${roomId}`).unsubscribe();
+      supabase.channel(`receipts-${roomId}`).unsubscribe();
+      setupRealtime();
+    };
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('online', handleOnline);
+
     return () => {
       if (presenceIntervalRef.current) clearInterval(presenceIntervalRef.current);
       if (presenceCheckRef.current) clearInterval(presenceCheckRef.current);
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (connectionGraceTimerRef.current) clearTimeout(connectionGraceTimerRef.current);
+      if (pasteSaveTimerRef.current) clearTimeout(pasteSaveTimerRef.current);
       typingTimeoutsRef.current.forEach((t) => clearTimeout(t));
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('online', handleOnline);
       supabase.channel(`chat-${roomId}`).unsubscribe();
       supabase.channel(`presence-${roomId}`).unsubscribe();
       supabase.channel(`typing-${roomId}`).unsubscribe();
       supabase.channel(`reactions-${roomId}`).unsubscribe();
       supabase.channel(`receipts-${roomId}`).unsubscribe();
+      supabase.channel(`paste-${roomId}`).unsubscribe();
       if (webrtcChannelRef.current) webrtcChannelRef.current.unsubscribe();
       unsubscribeFromPush(participantId).catch(() => {});
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
+
+  // Carrega o fundo: prioridade pra configuração específica desta sala,
+  // caindo pro padrão do perfil se não houver nenhuma, e sem nada pra
+  // convidados (que só podem definir um fundo local pra sessão atual).
+  // CipherPaste: bloco de notas cifrado compartilhado da sala
+  const loadPaste = async () => {
+    const { data } = await supabase
+      .from('room_pastes')
+      .select('encrypted_content')
+      .eq('room_id', roomId)
+      .maybeSingle();
+    if (data?.encrypted_content) {
+      const plain = await decryptText(data.encrypted_content, roomCode);
+      setPasteContent(plain === '[DECRYPT_FAILED]' ? '' : plain);
+    }
+  };
+
+  const savePaste = async (content: string) => {
+    setPasteSaving(true);
+    try {
+      const encrypted = await encryptText(content, roomCode);
+      await supabase
+        .from('room_pastes')
+        .upsert({ room_id: roomId, encrypted_content: encrypted, updated_by: nickname, updated_at: new Date().toISOString() });
+    } finally {
+      setPasteSaving(false);
+    }
+  };
+
+  const handlePasteChange = (value: string) => {
+    setPasteContent(value);
+    if (pasteSaveTimerRef.current) clearTimeout(pasteSaveTimerRef.current);
+    pasteSaveTimerRef.current = setTimeout(() => savePaste(value), 800);
+  };
+
+  const loadBackground = async () => {
+    if (!userId) return;
+
+    const { data: rm } = await supabase
+      .from('room_members')
+      .select('background_path, background_mode')
+      .eq('room_id', roomId)
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (rm?.background_path) {
+      const url = await getImageUrl(rm.background_path);
+      setBgUrl(url);
+      setBgMode((rm.background_mode as BackgroundMode) || 'default');
+      return;
+    }
+
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('default_background_path, default_background_mode')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (profile?.default_background_path) {
+      const url = await getImageUrl(profile.default_background_path);
+      setBgUrl(url);
+      setBgMode((profile.default_background_mode as BackgroundMode) || 'default');
+    }
+  };
+
+  const saveBackground = async (blob: Blob, mode: BackgroundMode, scope: 'room' | 'global') => {
+    setBgSaving(true);
+    try {
+      if (!userId) {
+        // Convidado: fundo só para esta sessão, sem upload nem persistência
+        const localUrl = URL.createObjectURL(blob);
+        setBgUrl(localUrl);
+        setBgMode(mode);
+        setShowBgSettings(false);
+        setBgStep('menu');
+        return;
+      }
+
+      const path = await uploadBackgroundImage(userId, blob);
+
+      if (scope === 'room') {
+        const { data: existing } = await supabase
+          .from('room_members')
+          .select('background_path')
+          .eq('room_id', roomId)
+          .eq('user_id', userId)
+          .maybeSingle();
+        if (existing?.background_path) {
+          await deleteStorageFile(existing.background_path).catch(() => {});
+        }
+        await supabase
+          .from('room_members')
+          .update({ background_path: path, background_mode: mode })
+          .eq('room_id', roomId)
+          .eq('user_id', userId);
+      } else {
+        const { data: existing } = await supabase
+          .from('profiles')
+          .select('default_background_path')
+          .eq('id', userId)
+          .maybeSingle();
+        if (existing?.default_background_path) {
+          await deleteStorageFile(existing.default_background_path).catch(() => {});
+        }
+        await supabase
+          .from('profiles')
+          .update({ default_background_path: path, default_background_mode: mode })
+          .eq('id', userId);
+      }
+
+      const url = await getImageUrl(path);
+      setBgUrl(url);
+      setBgMode(mode);
+      setShowBgSettings(false);
+      setBgStep('menu');
+      setPendingBgBlob(null);
+    } catch {
+      setSystemMessage('FALHA AO SALVAR FUNDO');
+      setTimeout(() => setSystemMessage(''), 3000);
+    } finally {
+      setBgSaving(false);
+    }
+  };
+
+  const clearBackground = async (scope: 'room' | 'global') => {
+    setBgSaving(true);
+    try {
+      if (userId) {
+        if (scope === 'room') {
+          await supabase
+            .from('room_members')
+            .update({ background_path: null, background_mode: null })
+            .eq('room_id', roomId)
+            .eq('user_id', userId);
+        } else {
+          await supabase
+            .from('profiles')
+            .update({ default_background_path: null, default_background_mode: null })
+            .eq('id', userId);
+        }
+      }
+      setBgUrl(null);
+      setShowBgSettings(false);
+      setBgStep('menu');
+    } finally {
+      setBgSaving(false);
+    }
+  };
+
+  // O modo "padrão" de fundo deve ficar limpo de verdade — nem os efeitos
+  // globais da plataforma (scanlines) podem cobrir a imagem original.
+  useEffect(() => {
+    onSuppressScanlines?.(bgMode === 'default' && !!bgUrl);
+    return () => onSuppressScanlines?.(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bgMode, bgUrl]);
 
   const loadInitialData = async () => {
     const [{ data: existingMsgs }, { data: parts }, { data: reactions }, { data: receipts }] = await Promise.all([
@@ -152,8 +383,8 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
             plaintext,
             createdAt: msg.created_at,
             isOwn: msg.sender_id === participantId,
-            state: msg.destroyed_at ? 'destroyed' : (msg.sender_id === participantId ? 'decoded' : 'scrambled'),
-            destroyAt: msg.sender_id === participantId && msgBurn && msgBurn.seconds > 0 ? Date.now() : null,
+            state: msg.destroyed_at ? 'destroyed' : 'decoded',
+            destroyAt: msgBurn && msgBurn.seconds > 0 ? Date.now() : null,
             burnConfig: msgBurn,
             reactions: msgReactions,
             readBy: msgReceipts,
@@ -163,11 +394,34 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
             replyToMessageId: msg.reply_to_message_id || null,
             replyToSenderNickname: replyInfo?.senderNickname || null,
             replyToPlaintext: replyInfo?.plaintext?.slice(0, 80) || null,
+            capsuleUnlockAt: msg.capsule_unlock_at || null,
           } as DecodedMessage;
         }),
       );
+      const toMarkRead = decoded.filter(
+        (m) => m.state !== 'destroyed' && !m.isOwn && !m.readBy.some((r) => r.participant_id === participantId),
+      );
       setMessages(decoded.filter((m) => m.state !== 'destroyed'));
+      toMarkRead.forEach((m) => markAsRead(m.id));
     }
+  };
+
+  // Reconexão com backoff progressivo: 1s, 2s, 5s, 10s, depois a cada 15s
+  // até conseguir. Evita bombardear o servidor com tentativas constantes
+  // enquanto ainda dá espaço pra reconectar rápido nas primeiras tentativas.
+  const BACKOFF_STEPS = [1000, 2000, 5000, 10000, 15000];
+  const scheduleReconnect = () => {
+    if (reconnectTimerRef.current) return; // já tem uma tentativa agendada
+    const attempt = reconnectAttemptRef.current;
+    const delay = BACKOFF_STEPS[Math.min(attempt, BACKOFF_STEPS.length - 1)];
+    reconnectAttemptRef.current += 1;
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      supabase.channel(`chat-${roomId}`).unsubscribe();
+      supabase.channel(`reactions-${roomId}`).unsubscribe();
+      supabase.channel(`receipts-${roomId}`).unsubscribe();
+      setupRealtime();
+    }, delay);
   };
 
   const setupRealtime = () => {
@@ -190,6 +444,7 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
           const msgBurn = msg.burn_config ? jsonToBurnConfig(msg.burn_config) : null;
 
           playReceiveSound();
+          setPulseKey((k) => k + 1);
           vibrate(60);
           setSystemMessage('NOVA TRANSMISSÃO RECEBIDA');
           setTimeout(() => setSystemMessage(''), 2000);
@@ -208,8 +463,8 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
                 plaintext,
                 createdAt: msg.created_at,
                 isOwn: false,
-                state: 'scrambled',
-                destroyAt: null,
+                state: 'decoded',
+                destroyAt: msgBurn && msgBurn.seconds > 0 ? Date.now() : null,
                 burnConfig: msgBurn,
                 reactions: [],
                 readBy: [],
@@ -219,9 +474,11 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
                 replyToMessageId: msg.reply_to_message_id || null,
                 replyToSenderNickname: replySource?.senderNickname || null,
                 replyToPlaintext: replySource?.plaintext?.slice(0, 80) || null,
+                capsuleUnlockAt: msg.capsule_unlock_at || null,
               },
             ];
           });
+          markAsRead(msg.id);
 
           // Incoming call signaling
           if ((msg.message_type === 'text') && msg.encrypted_content?.startsWith('{"call"')) {
@@ -244,9 +501,35 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
           );
         },
       )
-      .subscribe();
-
-    // Reactions realtime
+      .subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        chatChannelRef.current = channel;
+        if (connectionGraceTimerRef.current) {
+          clearTimeout(connectionGraceTimerRef.current);
+          connectionGraceTimerRef.current = null;
+        }
+        const wasReconnecting = reconnectAttemptRef.current > 0;
+        reconnectAttemptRef.current = 0;
+        setConnectionStatus('connected');
+        if (wasReconnecting) {
+          // Reconcilia o estado após uma queda: busca de novo o que pode ter
+          // sido perdido enquanto o tempo real estava fora do ar, em vez de
+          // confiar apenas nos eventos que chegarem daqui pra frente.
+          loadInitialData();
+        }
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+        // Só mostra "reconectando" se a queda persistir por um tempo —
+        // blips momentâneos (comuns até em rede boa) se resolvem sozinhos
+        // antes disso e nunca chegam a aparecer na tela.
+        if (!connectionGraceTimerRef.current) {
+          connectionGraceTimerRef.current = setTimeout(() => {
+            connectionGraceTimerRef.current = null;
+            setConnectionStatus('reconnecting');
+          }, 4000);
+        }
+        scheduleReconnect();
+      }
+    });
     const reactionChannel = supabase.channel(`reactions-${roomId}`);
     reactionChannel
       .on(
@@ -486,6 +769,7 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
 
     if (msg) {
       playSendSound();
+      setPulseKey((k) => k + 1);
       setMessages((prev) => [
         ...prev,
         {
@@ -507,10 +791,124 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
           replyToMessageId: replyTo?.id || null,
           replyToSenderNickname: replyTo?.senderNickname || null,
           replyToPlaintext: replyTo?.plaintext?.slice(0, 80) || null,
+          capsuleUnlockAt: null,
         },
       ]);
       setInput('');
+      const repliedTo = replyTo;
       setReplyTo(null);
+
+      if (/@eivorak\b/i.test(text)) {
+        triggerEivorak(text, repliedTo);
+      }
+    }
+  };
+
+  // Agente convocável @eivorak — roda no aparelho de quem enviou a
+  // mensagem que mencionou, sem depender de mais ninguém estar na sala.
+  // Não guarda histórico em lugar nenhum: cada chamada só usa as últimas
+  // mensagens já visíveis nesta tela como contexto.
+  const eivorakParticipantIdRef = useRef<string | null>(null);
+
+  const getOrCreateEivorakParticipant = async (): Promise<string> => {
+    if (eivorakParticipantIdRef.current) return eivorakParticipantIdRef.current;
+
+    const { data: existing } = await supabase
+      .from('participants')
+      .select('id')
+      .eq('room_id', roomId)
+      .eq('nickname', 'EiVORAK')
+      .maybeSingle();
+
+    if (existing) {
+      eivorakParticipantIdRef.current = existing.id;
+      return existing.id;
+    }
+
+    const { data: created } = await supabase
+      .from('participants')
+      .insert({ room_id: roomId, nickname: 'EiVORAK' })
+      .select()
+      .single();
+
+    eivorakParticipantIdRef.current = created?.id || null;
+    return created?.id || '';
+  };
+
+  const triggerEivorak = async (userMessage: string, repliedTo: DecodedMessage | null) => {
+    try {
+      setEivorakThinking(true);
+      const recentContext = messages
+        .slice(-10)
+        .map((m) => `${m.senderNickname}: ${m.plaintext}`)
+        .join('\n');
+
+      const urlMatch = userMessage.match(/https?:\/\/[^\s]+/i);
+      const cleanMessage = userMessage.replace(/@eivorak\b/i, '').trim() || userMessage;
+
+      let imageUrl: string | null = null;
+      if (repliedTo?.messageType === 'image' && repliedTo.storagePath) {
+        imageUrl = await getImageUrl(repliedTo.storagePath);
+      }
+
+      const { data, error } = await supabase.functions.invoke('eivorak-agent', {
+        body: {
+          message: cleanMessage,
+          recentContext,
+          linkUrl: urlMatch ? urlMatch[0] : null,
+          imageUrl,
+        },
+      });
+
+      if (error || !data?.reply) {
+        setSystemMessage('EIVORAK NÃO RESPONDEU — TENTE DE NOVO');
+        setTimeout(() => setSystemMessage(''), 3000);
+        return;
+      }
+
+      const eivorakId = await getOrCreateEivorakParticipant();
+      if (!eivorakId) return;
+
+      const encryptedReply = await encryptText(data.reply, roomCode);
+      const { data: replyMsg, error: replyErr } = await supabase
+        .from('messages')
+        .insert({
+          room_id: roomId,
+          sender_id: eivorakId,
+          encrypted_content: encryptedReply,
+        })
+        .select()
+        .single();
+
+      if (!replyErr && replyMsg) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: replyMsg.id,
+            senderId: eivorakId,
+            senderNickname: 'EiVORAK',
+            encryptedContent: encryptedReply,
+            plaintext: data.reply,
+            createdAt: replyMsg.created_at,
+            isOwn: false,
+            state: 'decoded',
+            destroyAt: null,
+            burnConfig: null,
+            reactions: [],
+            readBy: [],
+            messageType: 'text' as MessageType,
+            storagePath: null,
+            durationSeconds: null,
+            replyToMessageId: null,
+            replyToSenderNickname: null,
+            replyToPlaintext: null,
+            capsuleUnlockAt: null,
+          },
+        ]);
+        playReceiveSound();
+      }
+    } finally {
+      setEivorakThinking(false);
     }
   };
 
@@ -546,6 +944,7 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
 
       if (msg) {
         playSendSound();
+      setPulseKey((k) => k + 1);
         setMessages((prev) => [
           ...prev,
           {
@@ -567,6 +966,7 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
             replyToMessageId: null,
             replyToSenderNickname: null,
             replyToPlaintext: null,
+            capsuleUnlockAt: null,
           },
         ]);
       }
@@ -609,6 +1009,7 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
 
       if (msg) {
         playSendSound();
+      setPulseKey((k) => k + 1);
         setMessages((prev) => [
           ...prev,
           {
@@ -630,6 +1031,7 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
             replyToMessageId: null,
             replyToSenderNickname: null,
             replyToPlaintext: null,
+            capsuleUnlockAt: null,
           },
         ]);
       }
@@ -641,21 +1043,95 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
     }
   };
 
+  // Cápsula do tempo: cifra com tlock-js (drand) — não usa a chave da sala,
+  // já que a garantia de "só abre depois de X" vem da rede drand, não do
+  // AES da sala. O que fica em `encrypted_content` aqui é o texto cifrado
+  // do tlock, autocontido.
+  const handleSendCapsule = async (text: string, unlockAt: Date) => {
+    setShowCapsuleComposer(false);
+    try {
+      const { timelockEncryptText } = await import('@/lib/timelock');
+      const capsuleCiphertext = await timelockEncryptText(text, unlockAt);
+      const { data: msg, error: insertErr } = await supabase
+        .from('messages')
+        .insert({
+          room_id: roomId,
+          sender_id: participantId,
+          encrypted_content: capsuleCiphertext,
+          message_type: 'capsule',
+          capsule_unlock_at: unlockAt.toISOString(),
+        })
+        .select()
+        .single();
+
+      if (insertErr) throw insertErr;
+
+      if (msg) {
+        playSendSound();
+        setPulseKey((k) => k + 1);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: msg.id,
+            senderId: participantId,
+            senderNickname: nickname,
+            encryptedContent: capsuleCiphertext,
+            plaintext: '',
+            createdAt: msg.created_at,
+            isOwn: true,
+            state: 'decoded',
+            destroyAt: null,
+            burnConfig: null,
+            reactions: [],
+            readBy: [],
+            messageType: 'capsule' as MessageType,
+            storagePath: null,
+            durationSeconds: null,
+            replyToMessageId: null,
+            replyToSenderNickname: null,
+            replyToPlaintext: null,
+            capsuleUnlockAt: unlockAt.toISOString(),
+          },
+        ]);
+      }
+    } catch {
+      setSystemMessage('FALHA AO CRIAR CÁPSULA DO TEMPO');
+      setTimeout(() => setSystemMessage(''), 3000);
+    }
+  };
+
   const handleStartCall = (withVideo: boolean) => {
     if (peers.length === 0) {
       setSystemMessage('NENHUM PARTICIPANTE ONLINE');
       setTimeout(() => setSystemMessage(''), 3000);
       return;
     }
+    if (peers.length >= 2) {
+      // Sala com mais de 2 pessoas — chamada em grupo (malha), não 1-pra-1
+      setActiveGroupCall({ withVideo });
+      const channel = supabase.channel(`webrtc-${roomId}`);
+      channel.subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          sendOnChannel(channel, participantId, 'all', 'call-start', { withVideo, isGroup: true }).finally(() => {
+            channel.unsubscribe();
+          });
+        }
+      });
+      return;
+    }
     const peer = peers[0];
     setActiveCall({ peerId: peer.id, peerNickname: peer.nickname, withVideo, isInitiator: true });
   };
 
-  const handleEndCall = () => {
+  const handleEndCall = (reason?: 'failed') => {
     setActiveCall(null);
     if (webrtcChannelRef.current) {
       webrtcChannelRef.current.unsubscribe();
       webrtcChannelRef.current = null;
+    }
+    if (reason === 'failed') {
+      setSystemMessage('CHAMADA NÃO COMPLETOU — REDE INSTÁVEL. CONTINUE POR TEXTO.');
+      setTimeout(() => setSystemMessage(''), 5000);
     }
   };
 
@@ -693,29 +1169,10 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
     }
   };
 
-  const handleDecode = (id: string) => {
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.id === id && m.state === 'scrambled'
-          ? { ...m, state: 'decoding' as const }
-          : m,
-      ),
-    );
-  };
-
-  const handleDecoded = (id: string) => {
-    setMessages((prev) =>
-      prev.map((m) => {
-        if (m.id !== id || m.state !== 'decoding') return m;
-        const shouldBurn = m.burnConfig ? m.burnConfig.seconds > 0 : false;
-        return {
-          ...m,
-          state: 'decoded' as const,
-          destroyAt: shouldBurn ? Date.now() : null,
-        };
-      }),
-    );
-    // Insert read receipt
+  // Marca como lida automaticamente: como a sala está aberta e a mensagem já
+  // aparece legível na hora (sem mais o passo de "tocar para decodificar"),
+  // a leitura é registrada assim que a mensagem chega/é carregada na tela.
+  const markAsRead = (id: string) => {
     supabase
       .from('read_receipts')
       .insert({ message_id: id, participant_id: participantId })
@@ -742,6 +1199,12 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
       const msg = res.payload as SignalingMessage;
       if (msg.to !== participantId && msg.to !== 'all') return;
       if (msg.type === 'call-start') {
+        if (msg.payload?.isGroup) {
+          if (msg.from !== participantId) {
+            setGroupCallInvite({ withVideo: msg.payload?.withVideo ?? false });
+          }
+          return;
+        }
         const peer = allParticipants.find((p) => p.id === msg.from);
         setIncomingCall({ from: msg.from, fromNickname: peer?.nickname || 'UNKNOWN', withVideo: msg.payload?.withVideo ?? false });
       }
@@ -785,12 +1248,7 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
   };
 
   const handleLeaveClick = () => {
-    const hasUndecoded = messages.some((m) => m.state === 'scrambled');
-    if (hasUndecoded) {
-      setShowLeaveConfirm(true);
-    } else {
-      doLeave();
-    }
+    doLeave();
   };
 
   const doLeave = async () => {
@@ -846,9 +1304,10 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
   };
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="relative flex h-full flex-col">
+      {bgUrl && <ChatBackground imageUrl={bgUrl} mode={bgMode} pulseKey={pulseKey} />}
       {/* Header */}
-      <div className="glass clip-hud-sm z-20 flex items-center justify-between px-4 py-3">
+      <div className="glass clip-hud-sm relative z-20 flex items-center justify-between px-4 py-3">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex min-w-0 flex-col">
             <div className="flex min-w-0 items-center gap-2">
@@ -860,9 +1319,26 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
                 <Lock size={12} className="text-cyber-green glow-green" />
               </motion.span>
               <span className="truncate font-mono text-sm font-bold tracking-widest text-cyber-green glow-green">
-                {roomCode}
+                {roomName || roomCode}
               </span>
               <CopyButton text={roomCode} label="COPIAR" />
+              {roomName && (
+                <span className="shrink-0 font-mono text-[9px] tracking-widest text-cyber-text-faint">
+                  {roomCode}
+                </span>
+              )}
+              {connectionStatus !== 'connected' && (
+                <motion.span
+                  animate={{ opacity: [0.4, 1, 0.4] }}
+                  transition={{ duration: 1.2, repeat: Infinity }}
+                  className={`flex shrink-0 items-center gap-1 font-mono text-[9px] tracking-widest ${
+                    connectionStatus === 'offline' ? 'text-red-400' : 'text-cyber-amber'
+                  }`}
+                >
+                  <WifiOff size={10} />
+                  {connectionStatus === 'offline' ? 'OFFLINE' : 'RECONECTANDO...'}
+                </motion.span>
+              )}
             </div>
             <button
               onClick={() => setShowParticipantPanel(true)}
@@ -903,6 +1379,20 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
             <span className={burnConfig.mode !== 'off' ? 'text-cyber-green' : ''}>{burnLabel}</span>
           </button>
           <button
+            onClick={() => setShowBgSettings(true)}
+            className="flex items-center gap-1 font-mono text-[10px] tracking-widest text-cyber-text-dim transition-colors hover:text-cyber-cyan"
+            title="Fundo de tela"
+          >
+            <ImageIcon size={12} className={bgUrl ? 'text-cyber-cyan' : ''} />
+          </button>
+          <button
+            onClick={() => setShowPaste(true)}
+            className="flex items-center gap-1 font-mono text-[10px] tracking-widest text-cyber-text-dim transition-colors hover:text-cyber-magenta"
+            title="CipherPaste"
+          >
+            <FileText size={12} className={pasteContent ? 'text-cyber-magenta' : ''} />
+          </button>
+          <button
             onClick={handleLeaveClick}
             className="flex items-center gap-1 font-mono text-xs tracking-widest text-cyber-text-dim transition-colors hover:text-cyber-red"
           >
@@ -932,7 +1422,7 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4"
+        className="relative z-10 flex-1 overflow-y-auto overflow-x-hidden px-4 py-4"
       >
         <div className="mx-auto flex max-w-2xl flex-col gap-3">
           <div className="mb-4 text-center">
@@ -946,8 +1436,6 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
               <ChatMessage
                 message={msg}
                 roomCode={roomCode}
-                onDecode={handleDecode}
-                onDecodeComplete={handleDecoded}
                 onDestroy={handleDestroy}
                 onReact={handleReact}
                 onReply={handleReply}
@@ -957,6 +1445,26 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
               </div>
             ))}
           </AnimatePresence>
+          {eivorakThinking && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex min-w-0 items-center gap-2"
+            >
+              <span className="truncate font-mono text-xs text-cyber-magenta/70">EIVORAK ESTÁ PENSANDO</span>
+              <div className="flex shrink-0 gap-1">
+                {[0, 1, 2].map((i) => (
+                  <motion.span
+                    key={i}
+                    className="h-1 w-1 rounded-full bg-cyber-magenta"
+                    animate={{ opacity: [0.3, 1, 0.3] }}
+                    transition={{ duration: 0.8, repeat: Infinity, delay: i * 0.15 }}
+                  />
+                ))}
+              </div>
+            </motion.div>
+          )}
           {typingText && (
             <motion.div
               initial={{ opacity: 0 }}
@@ -1083,11 +1591,12 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
       )}
 
       {/* Input */}
-      <div className="z-20 px-4 pb-4 pt-2">
+      <div className="relative z-20 px-4 pb-4 pt-2">
         <div className="mx-auto max-w-2xl">
           <div className="glass clip-hud-sm flex items-center gap-2 px-4 py-3">
             <span className="font-mono text-cyber-green-dim">&gt;</span>
             <input
+              ref={inputRef}
               type="text"
               value={input}
               onChange={(e) => {
@@ -1107,11 +1616,32 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
             <motion.button
               whileHover={{ scale: 1.1 }}
               whileTap={{ scale: 0.9 }}
+              onClick={() => {
+                setInput('@eivorak vamos jogar ');
+                inputRef.current?.focus();
+              }}
+              className="shrink-0 text-cyber-magenta transition-colors hover:text-cyber-magenta/70"
+              title="Convidar EiVORAK"
+            >
+              <Sparkles size={16} />
+            </motion.button>
+            <motion.button
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.9 }}
               onClick={() => setShowImageUploader(true)}
               className="shrink-0 text-cyber-cyan transition-colors hover:text-cyber-cyan-dim"
               title="Enviar imagem"
             >
               <ImageIcon size={16} />
+            </motion.button>
+            <motion.button
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.9 }}
+              onClick={() => setShowCapsuleComposer(true)}
+              className="shrink-0 text-cyber-amber transition-colors hover:text-cyber-amber/70"
+              title="Cápsula do tempo"
+            >
+              <Clock size={16} />
             </motion.button>
             <motion.button
               whileHover={{ scale: 1.1 }}
@@ -1193,6 +1723,45 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
             onEnd={handleEndCall}
           />
         </Suspense>
+      )}
+
+      {activeGroupCall && (
+        <Suspense fallback={null}>
+          <GroupCallScreen
+            roomId={roomId}
+            myId={participantId}
+            myNickname={nickname}
+            withVideo={activeGroupCall.withVideo}
+            onEnd={() => setActiveGroupCall(null)}
+          />
+        </Suspense>
+      )}
+
+      {groupCallInvite && !activeGroupCall && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="absolute left-1/2 top-16 z-40 flex -translate-x-1/2 items-center gap-3 clip-hud-sm border border-cyber-green/40 bg-cyber-bg/95 px-4 py-2 backdrop-blur"
+        >
+          <span className="font-mono text-[10px] tracking-widest text-cyber-green">
+            CHAMADA EM GRUPO ATIVA
+          </span>
+          <button
+            onClick={() => {
+              setActiveGroupCall({ withVideo: groupCallInvite.withVideo });
+              setGroupCallInvite(null);
+            }}
+            className="clip-hud-sm border border-cyber-green/50 bg-cyber-green/10 px-3 py-1 font-mono text-[10px] tracking-widest text-cyber-green hover:bg-cyber-green/20"
+          >
+            ENTRAR
+          </button>
+          <button
+            onClick={() => setGroupCallInvite(null)}
+            className="text-cyber-text-dim hover:text-cyber-red"
+          >
+            <X size={12} />
+          </button>
+        </motion.div>
       )}
 
       {/* Leave confirmation modal */}
@@ -1333,6 +1902,213 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
               </button>
             </motion.div>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Background settings */}
+      <AnimatePresence>
+        {showBgSettings && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+            onClick={() => {
+              setShowBgSettings(false);
+              setBgStep('menu');
+              setPendingBgBlob(null);
+            }}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="glass clip-hud mx-6 w-full max-w-sm border-cyber-cyan/20 p-6"
+            >
+              <div className="mb-4 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <ImageIcon size={16} className="text-cyber-cyan" />
+                  <span className="font-mono text-sm tracking-widest text-cyber-cyan">
+                    FUNDO DE TELA
+                  </span>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowBgSettings(false);
+                    setBgStep('menu');
+                    setPendingBgBlob(null);
+                  }}
+                  className="text-cyber-text-dim transition-colors hover:text-cyber-red"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              {bgStep === 'menu' && (
+                <div className="space-y-2">
+                  <button
+                    onClick={() => setBgStep('upload')}
+                    className="clip-hud-sm flex w-full items-center justify-center gap-2 border border-cyber-cyan/30 bg-cyber-cyan/10 px-4 py-3 font-mono text-xs tracking-widest text-cyber-cyan transition-colors hover:bg-cyber-cyan/20"
+                  >
+                    <ImageIcon size={14} />
+                    {bgUrl ? 'TROCAR IMAGEM' : 'DEFINIR IMAGEM'}
+                  </button>
+                  {bgUrl && (
+                    <>
+                      <button
+                        onClick={() => clearBackground('room')}
+                        disabled={bgSaving}
+                        className="clip-hud-sm flex w-full items-center justify-center gap-2 border border-cyber-border px-4 py-3 font-mono text-xs tracking-widest text-cyber-text-dim transition-colors hover:text-cyber-red disabled:opacity-40"
+                      >
+                        REMOVER DESTA SALA
+                      </button>
+                      {userId && (
+                        <button
+                          onClick={() => clearBackground('global')}
+                          disabled={bgSaving}
+                          className="clip-hud-sm flex w-full items-center justify-center gap-2 border border-cyber-border px-4 py-3 font-mono text-xs tracking-widest text-cyber-text-dim transition-colors hover:text-cyber-red disabled:opacity-40"
+                        >
+                          REMOVER PADRÃO GLOBAL
+                        </button>
+                      )}
+                    </>
+                  )}
+                  {!userId && (
+                    <p className="pt-2 text-center font-mono text-[10px] tracking-widest text-cyber-text-faint">
+                      SEM CONTA: FUNDO VALE SÓ PARA ESTA SESSÃO
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {bgStep === 'upload' && (
+                <ImageUploader
+                  onSend={(blob) => {
+                    setPendingBgBlob(blob);
+                    setBgStep('mode');
+                  }}
+                  onCancel={() => setBgStep('menu')}
+                />
+              )}
+
+              {bgStep === 'mode' && pendingBgBlob && (
+                <div className="space-y-3">
+                  <p className="font-mono text-[10px] tracking-widest text-cyber-text-dim">
+                    ESCOLHA O ESTILO
+                  </p>
+                  {([
+                    { mode: 'default' as BackgroundMode, label: 'PADRÃO', desc: 'Imagem original, sem nenhum efeito' },
+                    { mode: 'parallax' as BackgroundMode, label: 'PARALLAX REATIVO', desc: 'Move com giroscópio/mouse' },
+                    { mode: 'reactive' as BackgroundMode, label: 'FUNDO VIVO', desc: 'Pulsa a cada mensagem' },
+                  ]).map((opt) => (
+                    <button
+                      key={opt.mode}
+                      onClick={() => setPendingBgMode(opt.mode)}
+                      className={`clip-hud-sm flex w-full flex-col items-start gap-0.5 px-4 py-3 text-left font-mono transition-colors ${
+                        pendingBgMode === opt.mode
+                          ? 'border border-cyber-cyan/40 bg-cyber-cyan/10 text-cyber-cyan'
+                          : 'border border-cyber-border text-cyber-text-dim hover:text-cyber-text'
+                      }`}
+                    >
+                      <span className="text-xs tracking-widest">{opt.label}</span>
+                      <span className="text-[10px] text-cyber-text-faint">{opt.desc}</span>
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => setBgStep('scope')}
+                    className="clip-hud-sm mt-2 w-full border border-cyber-cyan/30 bg-cyber-cyan/10 px-4 py-3 font-mono text-xs tracking-widest text-cyber-cyan transition-colors hover:bg-cyber-cyan/20"
+                  >
+                    CONTINUAR
+                  </button>
+                </div>
+              )}
+
+              {bgStep === 'scope' && pendingBgBlob && (
+                <div className="space-y-2">
+                  <p className="font-mono text-[10px] tracking-widest text-cyber-text-dim">
+                    APLICAR ONDE?
+                  </p>
+                  <button
+                    onClick={() => saveBackground(pendingBgBlob, pendingBgMode, 'room')}
+                    disabled={bgSaving}
+                    className="clip-hud-sm flex w-full items-center justify-center gap-2 border border-cyber-cyan/30 bg-cyber-cyan/10 px-4 py-3 font-mono text-xs tracking-widest text-cyber-cyan transition-colors hover:bg-cyber-cyan/20 disabled:opacity-40"
+                  >
+                    SÓ NESTA SALA
+                  </button>
+                  {userId && (
+                    <button
+                      onClick={() => saveBackground(pendingBgBlob, pendingBgMode, 'global')}
+                      disabled={bgSaving}
+                      className="clip-hud-sm flex w-full items-center justify-center gap-2 border border-cyber-green/30 bg-cyber-green/10 px-4 py-3 font-mono text-xs tracking-widest text-cyber-green transition-colors hover:bg-cyber-green/20 disabled:opacity-40"
+                    >
+                      TODAS AS SALAS (PADRÃO)
+                    </button>
+                  )}
+                  {bgSaving && (
+                    <p className="text-center font-mono text-[10px] text-cyber-text-faint">SALVANDO...</p>
+                  )}
+                </div>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* CipherPaste */}
+      <AnimatePresence>
+        {showPaste && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+            onClick={() => setShowPaste(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="glass clip-hud flex h-[80vh] w-full max-w-lg flex-col border-cyber-magenta/20 p-4"
+            >
+              <div className="mb-3 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <FileText size={16} className="text-cyber-magenta" />
+                  <span className="font-mono text-sm tracking-widest text-cyber-magenta">
+                    CIPHERPASTE
+                  </span>
+                  {pasteSaving && (
+                    <span className="font-mono text-[9px] text-cyber-text-faint">SALVANDO...</span>
+                  )}
+                </div>
+                <button onClick={() => setShowPaste(false)} className="text-cyber-text-dim hover:text-cyber-red">
+                  <X size={16} />
+                </button>
+              </div>
+              <p className="mb-2 font-mono text-[9px] leading-relaxed text-cyber-text-faint">
+                BLOCO DE NOTAS CIFRADO DA SALA — TODOS AQUI VEEM E EDITAM. SOME QUANDO A SALA FOR APAGADA.
+              </p>
+              <textarea
+                value={pasteContent}
+                onChange={(e) => handlePasteChange(e.target.value)}
+                onFocus={() => { pasteTextareaFocusedRef.current = true; }}
+                onBlur={() => { pasteTextareaFocusedRef.current = false; }}
+                placeholder="Cole código, texto, notas..."
+                className="flex-1 resize-none border border-cyber-border bg-transparent px-3 py-2 font-mono text-xs text-cyber-text placeholder:text-cyber-text-faint focus:border-cyber-magenta/50 focus:outline-none"
+              />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Cápsula do tempo */}
+      <AnimatePresence>
+        {showCapsuleComposer && (
+          <CapsuleComposer
+            onCancel={() => setShowCapsuleComposer(false)}
+            onSend={handleSendCapsule}
+          />
         )}
       </AnimatePresence>
 

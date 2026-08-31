@@ -5,6 +5,7 @@ export interface UserProfile {
   email: string;
   nickname: string;
   created_at: string;
+  theme_preference?: 'default' | 'overide' | null;
 }
 
 export interface RoomMember {
@@ -80,7 +81,7 @@ export interface Participant {
   device_id: string | null;
 }
 
-export type MessageType = 'text' | 'audio' | 'image';
+export type MessageType = 'text' | 'audio' | 'image' | 'capsule';
 
 export interface MessageRow {
   id: string;
@@ -95,6 +96,7 @@ export interface MessageRow {
   storage_path: string | null;
   duration_seconds: number | null;
   reply_to_message_id: string | null;
+  capsule_unlock_at: string | null;
 }
 
 export interface Reaction {
@@ -131,4 +133,5 @@ export interface DecodedMessage {
   replyToMessageId: string | null;
   replyToSenderNickname: string | null;
   replyToPlaintext: string | null;
+  capsuleUnlockAt: string | null;
 }
