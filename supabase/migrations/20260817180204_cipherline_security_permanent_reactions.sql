@@ -130,8 +130,10 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
 AS $$
+DECLARE
+  v_room rooms%ROWTYPE;
 BEGIN
-  IF EXISTS (SELECT 1 FROM rooms WHERE code = p_code) THEN
+  IF EXISTS (SELECT 1 FROM rooms WHERE rooms.code = p_code) THEN
     RAISE EXCEPTION 'CÓDIGO JÁ EM USO';
   END IF;
 
@@ -142,10 +144,9 @@ BEGIN
     p_default_burn_config,
     CASE WHEN p_is_permanent THEN NULL ELSE now() + interval '24 hours' END
   )
-  RETURNING rooms.id, rooms.code, rooms.is_permanent, rooms.expires_at, rooms.default_burn_config
-  INTO id, code, is_permanent, expires_at, default_burn_config;
+  RETURNING * INTO v_room;
 
-  RETURN NEXT;
+  RETURN QUERY SELECT v_room.id, v_room.code, v_room.is_permanent, v_room.expires_at, v_room.default_burn_config;
 END;
 $$;
 

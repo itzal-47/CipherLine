@@ -4,7 +4,7 @@ import { LogOut, ArrowDown, Send, AlertTriangle, Settings, Lock, Clock, X, Users
 import { supabase } from '@/lib/supabase';
 import { encryptText, decryptText } from '@/lib/crypto';
 import { playSendSound, playReceiveSound } from '@/lib/audio';
-import { getDeviceId } from '@/lib/device';
+import { getDeviceId, getHiddenMessageIds, hideMessageLocally } from '@/lib/device';
 import { requestNotificationPermission, subscribeToPush, unsubscribeFromPush } from '@/lib/push';
 import { uploadEncryptedAudio, uploadImage, uploadBackgroundImage, getImageUrl, deleteStorageFile } from '@/lib/media';
 import { StatusDot } from '@/components/StatusDot';
@@ -31,6 +31,9 @@ interface ChatScreenProps {
   onLeave: () => void;
   userId?: string;
   onSuppressScanlines?: (suppress: boolean) => void;
+  onOpenPrivateReply?: (roomId: string, roomCode: string, quote: { text: string; sender: string; roomName: string }) => void;
+  initialQuote?: { text: string; sender: string; roomName: string } | null;
+  onQuoteConsumed?: () => void;
 }
 
 const PRESENCE_INTERVAL = 10000;
@@ -55,9 +58,20 @@ function vibrate(pattern: number | number[]) {
   }
 }
 
-export function ChatScreen({ roomId, roomCode, participantId, nickname, isPermanent, onLeave, userId, onSuppressScanlines }: ChatScreenProps) {
+export function ChatScreen({ roomId, roomCode, participantId, nickname, isPermanent, onLeave, userId, onSuppressScanlines, onOpenPrivateReply, initialQuote, onQuoteConsumed }: ChatScreenProps) {
   const [messages, setMessages] = useState<DecodedMessage[]>([]);
   const [input, setInput] = useState('');
+
+  // Ao chegar aqui vindo de "Responder em Privado", pré-preenche o campo
+  // com a citação da mensagem original, pra dar contexto sem precisar de
+  // um mecanismo de resposta entre salas diferentes.
+  useEffect(() => {
+    if (initialQuote) {
+      setInput(`↩️ Sobre "${initialQuote.text}" (${initialQuote.sender}, em ${initialQuote.roomName}):\n`);
+      onQuoteConsumed?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [peers, setPeers] = useState<Participant[]>([]);
   const [typingPeers, setTypingPeers] = useState<Set<string>>(new Set());
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
@@ -81,6 +95,11 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
   const pasteTextareaFocusedRef = useRef(false);
   const pasteSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showCapsuleComposer, setShowCapsuleComposer] = useState(false);
+  const [showEivorakMenu, setShowEivorakMenu] = useState(false);
+  const [showChannelSettings, setShowChannelSettings] = useState(false);
+  const [editRoomName, setEditRoomName] = useState('');
+  const [editIsPublic, setEditIsPublic] = useState(false);
+  const [channelSettingsSaving, setChannelSettingsSaving] = useState(false);
   const [showParticipantPanel, setShowParticipantPanel] = useState(false);
   const [burnConfig, setBurnConfig] = useState<BurnConfig>({ mode: 'off', seconds: 0 });
   const [customBurnValue, setCustomBurnValue] = useState('');
@@ -116,8 +135,10 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
     loadInitialData();
     loadBackground();
     loadPaste();
-    supabase.from('rooms').select('name').eq('id', roomId).maybeSingle().then(({ data }) => {
+    supabase.from('rooms').select('name, is_public').eq('id', roomId).maybeSingle().then(({ data }) => {
       if (data?.name) setRoomName(data.name);
+      setEditRoomName(data?.name || '');
+      setEditIsPublic(data?.is_public || false);
     });
 
     const pasteChannel = supabase
@@ -214,6 +235,25 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
     setPasteContent(value);
     if (pasteSaveTimerRef.current) clearTimeout(pasteSaveTimerRef.current);
     pasteSaveTimerRef.current = setTimeout(() => savePaste(value), 800);
+  };
+
+  const saveChannelSettings = async () => {
+    setChannelSettingsSaving(true);
+    try {
+      const { error } = await supabase
+        .from('rooms')
+        .update({ name: editRoomName.trim() || null, is_public: userId ? editIsPublic : false })
+        .eq('id', roomId);
+      if (error) {
+        setSystemMessage('FALHA AO SALVAR — VERIFIQUE SE AS MIGRATIONS FORAM APLICADAS');
+        setTimeout(() => setSystemMessage(''), 5000);
+        return;
+      }
+      setRoomName(editRoomName.trim());
+      setShowChannelSettings(false);
+    } finally {
+      setChannelSettingsSaving(false);
+    }
   };
 
   const loadBackground = async () => {
@@ -401,7 +441,8 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
       const toMarkRead = decoded.filter(
         (m) => m.state !== 'destroyed' && !m.isOwn && !m.readBy.some((r) => r.participant_id === participantId),
       );
-      setMessages(decoded.filter((m) => m.state !== 'destroyed'));
+      const hiddenIds = getHiddenMessageIds(roomId);
+      setMessages(decoded.filter((m) => m.state !== 'destroyed' && !hiddenIds.has(m.id)));
       toMarkRead.forEach((m) => markAsRead(m.id));
     }
   };
@@ -642,7 +683,7 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
       });
       return fresh;
     });
-    setAllParticipants(data.filter((p) => p.id !== participantId));
+    setAllParticipants(data);
   };
 
   useEffect(() => {
@@ -861,8 +902,9 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
       });
 
       if (error || !data?.reply) {
-        setSystemMessage('EIVORAK NÃO RESPONDEU — TENTE DE NOVO');
-        setTimeout(() => setSystemMessage(''), 3000);
+        const detail = (data as any)?.error || error?.message;
+        setSystemMessage(detail ? `EIVORAK: ${String(detail).slice(0, 80)}` : 'EIVORAK NÃO RESPONDEU — TENTE DE NOVO');
+        setTimeout(() => setSystemMessage(''), 6000);
         return;
       }
 
@@ -1149,11 +1191,47 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
     setReplyTo(message);
   };
 
-  const handleReplyPrivate = (message: DecodedMessage) => {
-    // For now, we show a system message indicating the feature
-    // Full implementation would create a new private room
-    setSystemMessage('RESPONDER EM PRIVADO: RECURSO EM DESENVOLVIMENTO');
-    setTimeout(() => setSystemMessage(''), 3000);
+  const handleReplyPrivate = async (message: DecodedMessage) => {
+    if (!userId) {
+      setSystemMessage('PRECISA DE CONTA PARA CONVERSAS PRIVADAS');
+      setTimeout(() => setSystemMessage(''), 3000);
+      return;
+    }
+
+    const { data: senderParticipant } = await supabase
+      .from('participants')
+      .select('user_id')
+      .eq('id', message.senderId)
+      .maybeSingle();
+
+    if (!senderParticipant?.user_id) {
+      setSystemMessage('ESSA PESSOA ESTÁ SEM CONTA — SEM COMO ABRIR CONVERSA PRIVADA AINDA');
+      setTimeout(() => setSystemMessage(''), 4000);
+      return;
+    }
+
+    if (senderParticipant.user_id === userId) {
+      setSystemMessage('ESSA MENSAGEM É SUA');
+      setTimeout(() => setSystemMessage(''), 3000);
+      return;
+    }
+
+    const { data: dmResult, error: dmErr } = await supabase.rpc('find_or_create_dm', {
+      p_other_user_id: senderParticipant.user_id,
+    });
+
+    if (dmErr || !dmResult || dmResult.length === 0) {
+      setSystemMessage('FALHA AO ABRIR CONVERSA PRIVADA');
+      setTimeout(() => setSystemMessage(''), 3000);
+      return;
+    }
+
+    const dm = dmResult[0];
+    onOpenPrivateReply?.(dm.room_id, dm.room_code, {
+      text: message.plaintext.slice(0, 200),
+      sender: message.senderNickname,
+      roomName: roomName || roomCode,
+    });
   };
 
   const handleScrollToMessage = (messageId: string) => {
@@ -1183,12 +1261,31 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
     setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, state: 'destroying' as const } : m)));
     const target = messages.find((m) => m.id === id);
     (async () => {
-      if (target?.storagePath) {
-        await supabase.storage.from('cipherline-media').remove([target.storagePath]);
+      const { error: deleteErr } = await supabase.from('messages').delete().eq('id', id);
+
+      if (deleteErr) {
+        // A exclusão de verdade falhou no servidor — não finge que apagou.
+        setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, state: 'decoded' as const } : m)));
+        setSystemMessage('FALHA AO APAGAR MENSAGEM');
+        setTimeout(() => setSystemMessage(''), 3000);
+        return;
       }
-      await supabase.from('messages').delete().eq('id', id);
+
+      if (target?.storagePath) {
+        // Best-effort: a mensagem já foi apagada de verdade acima; se a
+        // limpeza do arquivo falhar, não é motivo pra reverter nada.
+        await supabase.storage.from('cipherline-media').remove([target.storagePath]).catch(() => {});
+      }
+
       setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, state: 'destroyed' as const } : m)));
     })();
+  };
+
+  // "Apagar só para mim": não mexe no servidor, só esconde neste
+  // dispositivo — os outros continuam vendo normalmente.
+  const handleDeleteForMe = (id: string) => {
+    hideMessageLocally(roomId, id);
+    setMessages((prev) => prev.filter((m) => m.id !== id));
   };
 
   // WebRTC signaling listener for incoming calls
@@ -1393,6 +1490,13 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
             <FileText size={12} className={pasteContent ? 'text-cyber-magenta' : ''} />
           </button>
           <button
+            onClick={() => setShowChannelSettings(true)}
+            className="flex items-center gap-1 font-mono text-[10px] tracking-widest text-cyber-text-dim transition-colors hover:text-cyber-green"
+            title="Configurações do canal"
+          >
+            <Settings size={12} />
+          </button>
+          <button
             onClick={handleLeaveClick}
             className="flex items-center gap-1 font-mono text-xs tracking-widest text-cyber-text-dim transition-colors hover:text-cyber-red"
           >
@@ -1437,6 +1541,7 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
                 message={msg}
                 roomCode={roomCode}
                 onDestroy={handleDestroy}
+                onDeleteForMe={handleDeleteForMe}
                 onReact={handleReact}
                 onReply={handleReply}
                 onReplyPrivate={handleReplyPrivate}
@@ -1613,18 +1718,47 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
               placeholder="digite sua mensagem..."
               className="min-w-0 flex-1 bg-transparent font-mono text-sm text-cyber-green placeholder-cyber-text-faint focus:outline-none"
             />
-            <motion.button
-              whileHover={{ scale: 1.1 }}
-              whileTap={{ scale: 0.9 }}
-              onClick={() => {
-                setInput('@eivorak vamos jogar ');
-                inputRef.current?.focus();
-              }}
-              className="shrink-0 text-cyber-magenta transition-colors hover:text-cyber-magenta/70"
-              title="Convidar EiVORAK"
-            >
-              <Sparkles size={16} />
-            </motion.button>
+            <div className="relative shrink-0">
+              <motion.button
+                whileHover={{ scale: 1.1 }}
+                whileTap={{ scale: 0.9 }}
+                onClick={() => setShowEivorakMenu((v) => !v)}
+                className="text-cyber-magenta transition-colors hover:text-cyber-magenta/70"
+                title="EiVORAK"
+              >
+                <Sparkles size={16} />
+              </motion.button>
+              <AnimatePresence>
+                {showEivorakMenu && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 8 }}
+                    className="absolute bottom-10 right-0 z-30 w-52 clip-hud-sm border border-cyber-magenta/30 bg-cyber-bg/95 p-1 backdrop-blur"
+                  >
+                    {[
+                      { label: 'RESUMIR CONVERSA', prompt: '@eivorak resume a conversa até aqui' },
+                      { label: 'CONVIDAR PRO JOGO', prompt: '@eivorak vamos jogar ' },
+                      { label: 'TRADUZIR', prompt: '@eivorak traduz: ' },
+                      { label: 'TIRAR UMA DÚVIDA', prompt: '@eivorak ' },
+                      { label: 'ANALISAR LINK', prompt: '@eivorak o que achas deste link: ' },
+                    ].map((opt) => (
+                      <button
+                        key={opt.label}
+                        onClick={() => {
+                          setInput(opt.prompt);
+                          setShowEivorakMenu(false);
+                          inputRef.current?.focus();
+                        }}
+                        className="block w-full px-3 py-2 text-left font-mono text-[10px] tracking-widest text-cyber-text-dim transition-colors hover:bg-cyber-magenta/10 hover:text-cyber-magenta"
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
             <motion.button
               whileHover={{ scale: 1.1 }}
               whileTap={{ scale: 0.9 }}
@@ -2109,6 +2243,95 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
             onCancel={() => setShowCapsuleComposer(false)}
             onSend={handleSendCapsule}
           />
+        )}
+      </AnimatePresence>
+
+      {/* Channel settings */}
+      <AnimatePresence>
+        {showChannelSettings && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+            onClick={() => setShowChannelSettings(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="glass clip-hud w-full max-w-sm border-cyber-green/20 p-5"
+            >
+              <div className="mb-4 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Settings size={16} className="text-cyber-green" />
+                  <span className="font-mono text-sm tracking-widest text-cyber-green">
+                    CONFIGURAÇÕES DO CANAL
+                  </span>
+                </div>
+                <button onClick={() => setShowChannelSettings(false)} className="text-cyber-text-dim hover:text-cyber-red">
+                  <X size={16} />
+                </button>
+              </div>
+
+              <p className="mb-1 font-mono text-[10px] tracking-widest text-cyber-text-dim">NOME DO CANAL</p>
+              <input
+                type="text"
+                value={editRoomName}
+                onChange={(e) => setEditRoomName(e.target.value)}
+                maxLength={60}
+                placeholder="Sem nome (usa o código)"
+                className="mb-4 w-full border border-cyber-border bg-transparent px-3 py-2 font-mono text-sm text-cyber-green placeholder:text-cyber-text-faint focus:border-cyber-green/50 focus:outline-none"
+              />
+
+              <p className="mb-1 font-mono text-[10px] tracking-widest text-cyber-text-dim">CÓDIGO DE ACESSO</p>
+              <div className="mb-4 flex items-center justify-between border border-cyber-border px-3 py-2">
+                <span className="font-mono text-sm text-cyber-text">{roomCode}</span>
+                <CopyButton text={roomCode} label="COPIAR" />
+              </div>
+
+              {userId ? (
+                <>
+                  <p className="mb-2 font-mono text-[10px] tracking-widest text-cyber-text-dim">VISIBILIDADE</p>
+                  <div className="mb-4 grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => setEditIsPublic(false)}
+                      className={`clip-hud-sm px-3 py-2 font-mono text-[10px] tracking-widest transition-colors ${
+                        !editIsPublic
+                          ? 'border border-cyber-green/40 bg-cyber-green/10 text-cyber-green'
+                          : 'border border-cyber-border text-cyber-text-dim hover:text-cyber-text'
+                      }`}
+                    >
+                      PRIVADO
+                    </button>
+                    <button
+                      onClick={() => setEditIsPublic(true)}
+                      className={`clip-hud-sm px-3 py-2 font-mono text-[10px] tracking-widest transition-colors ${
+                        editIsPublic
+                          ? 'border border-cyber-cyan/40 bg-cyber-cyan/10 text-cyber-cyan'
+                          : 'border border-cyber-border text-cyber-text-dim hover:text-cyber-text'
+                      }`}
+                    >
+                      PÚBLICO
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <p className="mb-4 font-mono text-[9px] leading-relaxed text-cyber-text-faint">
+                  ENTRE COM UMA CONTA PARA CONTROLAR VISIBILIDADE PÚBLICA/PRIVADA
+                </p>
+              )}
+
+              <button
+                onClick={saveChannelSettings}
+                disabled={channelSettingsSaving}
+                className="clip-hud-sm w-full border border-cyber-green/30 bg-cyber-green/10 px-4 py-3 font-mono text-xs tracking-widest text-cyber-green transition-colors hover:bg-cyber-green/20 disabled:opacity-50"
+              >
+                {channelSettingsSaving ? 'SALVANDO...' : 'SALVAR'}
+              </button>
+            </motion.div>
+          </motion.div>
         )}
       </AnimatePresence>
 

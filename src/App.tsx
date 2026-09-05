@@ -61,6 +61,8 @@ export default function App() {
   const [isGuest, setIsGuest] = useState(false);
   const [suppressScanlines, setSuppressScanlines] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [pendingQuote, setPendingQuote] = useState<{ text: string; sender: string; roomName: string } | null>(null);
+  const [prefilledJoinCode, setPrefilledJoinCode] = useState('');
   const [theme, setThemeState] = useState<'default' | 'overide'>(
     () => (localStorage.getItem('cipherline_theme') as 'default' | 'overide') || 'default',
   );
@@ -155,28 +157,12 @@ export default function App() {
   }, [chatSession, nickname]);
 
   // Ao voltar de background (troca de aba, minimizar, etc.) sem recarregar
-  // a página inteira, revalida se a sala ainda existe de verdade — o React
-  // pode manter o estado em memória mesmo se o servidor já não reconhece
-  // mais aquele participante, e isso deixava a UI "mentindo" sobre estar
-  // na sala.
-  useEffect(() => {
-    const handleVisibility = async () => {
-      if (document.visibilityState !== 'visible' || !chatSession) return;
-      const { data: participant } = await supabase
-        .from('participants')
-        .select('id')
-        .eq('id', chatSession.participantId)
-        .maybeSingle();
-      if (!participant) {
-        // A sala/participante não existe mais de verdade — evita deixar o
-        // usuário preso numa tela de chat fantasma.
-        setChatSession(null);
-        setScreen(profile ? 'dashboard' : 'home');
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisibility);
-    return () => document.removeEventListener('visibilitychange', handleVisibility);
-  }, [chatSession, profile]);
+  // Nota: removemos um verificador que rodava a cada troca de aba e
+  // expulsava o usuário da sala se uma única consulta falhasse (sem
+  // nenhuma tentativa extra) — isso causava saídas "aleatórias" da sala.
+  // A própria ChatScreen já cuida de reconexão e staleness com mais
+  // cuidado (backoff, período de graça), então não precisa desse
+  // atalho agressivo aqui no nível do App.
 
   const restoreChatSessionIfValid = async (): Promise<{ session: ChatSession; nickname: string } | null> => {
     const saved = loadChatSession();
@@ -281,13 +267,13 @@ export default function App() {
     if (existing) {
       await supabase
         .from('participants')
-        .update({ last_seen: new Date().toISOString() })
+        .update({ last_seen: new Date().toISOString(), user_id: profile?.id || null })
         .eq('id', existing.id);
       participantId = existing.id;
     } else {
       const { data: created, error } = await supabase
         .from('participants')
-        .insert({ room_id: roomId, nickname: name })
+        .insert({ room_id: roomId, nickname: name, user_id: profile?.id || null })
         .select()
         .single();
       if (error || !created) return;
@@ -298,6 +284,43 @@ export default function App() {
     setScreen('chat');
   };
 
+  const handleOpenPrivateReply = async (
+    dmRoomId: string,
+    dmRoomCode: string,
+    quote: { text: string; sender: string; roomName: string },
+  ) => {
+    const name = profile?.nickname || 'USER';
+    setNickname(name);
+
+    const { data: existing } = await supabase
+      .from('participants')
+      .select('id')
+      .eq('room_id', dmRoomId)
+      .eq('nickname', name)
+      .maybeSingle();
+
+    let dmParticipantId: string;
+    if (existing) {
+      await supabase
+        .from('participants')
+        .update({ last_seen: new Date().toISOString(), user_id: profile?.id || null })
+        .eq('id', existing.id);
+      dmParticipantId = existing.id;
+    } else {
+      const { data: created, error } = await supabase
+        .from('participants')
+        .insert({ room_id: dmRoomId, nickname: name, user_id: profile?.id || null })
+        .select()
+        .single();
+      if (error || !created) return;
+      dmParticipantId = created.id;
+    }
+
+    setPendingQuote(quote);
+    setChatSession({ roomId: dmRoomId, roomCode: dmRoomCode, participantId: dmParticipantId, isPermanent: true });
+    setScreen('chat');
+  };
+
   const handleDashboardCreate = () => {
     setNickname(profile?.nickname || 'USER');
     setScreen('create');
@@ -305,6 +328,7 @@ export default function App() {
 
   const handleDashboardJoinByCode = (code: string) => {
     setNickname(profile?.nickname || 'USER');
+    setPrefilledJoinCode(code);
     setScreen('join');
   };
 
@@ -419,10 +443,17 @@ export default function App() {
           {screen === 'join' && (
             <JoinScreen
               nickname={nickname}
-              onBack={() => (profile ? setScreen('dashboard') : setScreen('home'))}
-              onChannelJoined={handleChannelCreated}
+              onBack={() => {
+                setPrefilledJoinCode('');
+                profile ? setScreen('dashboard') : setScreen('home');
+              }}
+              onChannelJoined={(...args) => {
+                setPrefilledJoinCode('');
+                handleChannelCreated(...args);
+              }}
               onExpired={handleExpired}
               userId={profile?.id}
+              initialCode={prefilledJoinCode}
             />
           )}
 
@@ -444,6 +475,9 @@ export default function App() {
               onLeave={handleLeave}
               userId={profile?.id}
               onSuppressScanlines={setSuppressScanlines}
+              onOpenPrivateReply={handleOpenPrivateReply}
+              initialQuote={pendingQuote}
+              onQuoteConsumed={() => setPendingQuote(null)}
             />
           )}
         </motion.div>

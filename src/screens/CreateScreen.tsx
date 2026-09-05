@@ -131,7 +131,7 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
 
     const { data: participant, error: pErr } = await supabase
       .from('participants')
-      .insert({ room_id: createdRoom.id, nickname: userNickname || nickname, device_id: getDeviceId() })
+      .insert({ room_id: createdRoom.id, nickname: userNickname || nickname, device_id: getDeviceId(), user_id: userId || null })
       .select()
       .single();
 

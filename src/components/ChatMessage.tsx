@@ -15,17 +15,19 @@ interface ChatMessageProps {
   message: DecodedMessage;
   roomCode: string;
   onDestroy: (id: string) => void;
+  onDeleteForMe: (id: string) => void;
   onReact: (messageId: string, emoji: string) => void;
   onReply: (message: DecodedMessage) => void;
   onReplyPrivate: (message: DecodedMessage) => void;
   onScrollToMessage: (messageId: string) => void;
 }
 
-export function ChatMessage({ message, roomCode, onDestroy, onReact, onReply, onReplyPrivate, onScrollToMessage }: ChatMessageProps) {
+export function ChatMessage({ message, roomCode, onDestroy, onDeleteForMe, onReact, onReply, onReplyPrivate, onScrollToMessage }: ChatMessageProps) {
   const [displayText, setDisplayText] = useState('');
   const [destroyCountdown, setDestroyCountdown] = useState(0);
   const [showReactions, setShowReactions] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
+  const [showDeleteChoice, setShowDeleteChoice] = useState(false);
   const [showActions, setShowActions] = useState(false);
   const [showImageViewer, setShowImageViewer] = useState(false);
   const [thumbUrl, setThumbUrl] = useState('');
@@ -105,8 +107,18 @@ export function ChatMessage({ message, roomCode, onDestroy, onReact, onReply, on
 
   const handleDelete = (e: React.MouseEvent) => {
     e.stopPropagation();
+    setShowDeleteChoice(true);
+  };
+
+  const confirmDeleteForEveryone = () => {
+    setShowDeleteChoice(false);
     playDestroySound();
     onDestroy(message.id);
+  };
+
+  const confirmDeleteForMe = () => {
+    setShowDeleteChoice(false);
+    onDeleteForMe(message.id);
   };
 
   const handleLongPressStart = () => {
@@ -357,6 +369,37 @@ export function ChatMessage({ message, roomCode, onDestroy, onReact, onReply, on
               >
                 <Trash2 size={12} />
               </motion.button>
+            )}
+          </AnimatePresence>
+
+          {/* Delete scope choice */}
+          <AnimatePresence>
+            {showDeleteChoice && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="absolute right-1 top-8 z-30 clip-hud-sm border border-cyber-red/30 bg-cyber-bg/95 p-2 backdrop-blur"
+              >
+                <button
+                  onClick={confirmDeleteForMe}
+                  className="block w-full px-2 py-1.5 text-left font-mono text-[10px] tracking-widest text-cyber-text-dim hover:text-cyber-text"
+                >
+                  APAGAR SÓ PARA MIM
+                </button>
+                <button
+                  onClick={confirmDeleteForEveryone}
+                  className="block w-full px-2 py-1.5 text-left font-mono text-[10px] tracking-widest text-cyber-red hover:bg-cyber-red/10"
+                >
+                  APAGAR PARA TODOS
+                </button>
+                <button
+                  onClick={() => setShowDeleteChoice(false)}
+                  className="block w-full px-2 py-1.5 text-left font-mono text-[10px] tracking-widest text-cyber-text-faint hover:text-cyber-text"
+                >
+                  CANCELAR
+                </button>
+              </motion.div>
             )}
           </AnimatePresence>
 

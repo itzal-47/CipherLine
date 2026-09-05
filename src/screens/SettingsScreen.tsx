@@ -77,7 +77,7 @@ export function SettingsScreen({ profile, onClose, onSignOut, onAccountDeleted, 
     { view: 'termos', icon: FileText, label: 'TERMOS DE USO' },
     { view: 'bug', icon: Bug, label: 'REPORTAR BUG' },
     { view: 'sugestao', icon: MessageSquarePlus, label: 'CAIXA DE SUGESTÕES' },
-    { view: 'conta', icon: UserX, label: 'CONTA' },
+    ...(profile ? [{ view: 'conta' as SettingsView, icon: UserX, label: 'CONTA' }] : []),
   ];
 
   return (
@@ -269,7 +269,7 @@ export function SettingsScreen({ profile, onClose, onSignOut, onAccountDeleted, 
               </motion.div>
             )}
 
-            {view === 'conta' && (
+            {view === 'conta' && profile && (
               <motion.div key="conta" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-3">
                 {profile && (
                   <div className="glass clip-hud-sm p-4">

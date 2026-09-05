@@ -11,10 +11,11 @@ interface JoinScreenProps {
   onChannelJoined: (roomId: string, roomCode: string, participantId: string, isPermanent: boolean) => void;
   onExpired: (roomCode: string) => void;
   userId?: string;
+  initialCode?: string;
 }
 
-export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired, userId }: JoinScreenProps) {
-  const [code, setCode] = useState('');
+export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired, userId, initialCode }: JoinScreenProps) {
+  const [code, setCode] = useState(initialCode || '');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -112,7 +113,7 @@ export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired, userI
         // Update last_seen and device_id to reconnect
         await supabase
           .from('participants')
-          .update({ last_seen: new Date().toISOString(), device_id: getDeviceId() })
+          .update({ last_seen: new Date().toISOString(), device_id: getDeviceId(), user_id: userId || null })
           .eq('id', savedParticipantId);
         await ensureRoomMembership(room.id);
         onChannelJoined(room.id, room.code, savedParticipantId, isPermanent);
@@ -132,7 +133,7 @@ export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired, userI
       // Reuse existing participant (same nickname = same logical person)
       await supabase
         .from('participants')
-        .update({ last_seen: new Date().toISOString(), device_id: getDeviceId() })
+        .update({ last_seen: new Date().toISOString(), device_id: getDeviceId(), user_id: userId || null })
         .eq('id', existingParticipant.id);
       saveParticipantId(trimmed, nickname, existingParticipant.id);
       await ensureRoomMembership(room.id);
@@ -142,7 +143,7 @@ export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired, userI
 
     const { data: participant, error: pErr } = await supabase
       .from('participants')
-      .insert({ room_id: room.id, nickname, device_id: getDeviceId() })
+      .insert({ room_id: room.id, nickname, device_id: getDeviceId(), user_id: userId || null })
       .select()
       .single();
 

@@ -150,8 +150,13 @@ Deno.serve(async (req: Request) => {
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // Erros da SDK da Groq costumam vir com mais detalhe em err.error —
+    // expõe isso também pra facilitar diagnóstico real em vez de só
+    // "Internal Server Error" genérico.
+    const detail = (err as any)?.error?.message || (err as any)?.response?.data?.error?.message;
     return new Response(
-      JSON.stringify({ error: (err as Error).message }),
+      JSON.stringify({ error: detail || message }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }

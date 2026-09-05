@@ -28,3 +28,27 @@ export function clearParticipantId(roomCode: string, nickname: string) {
   if (typeof localStorage === 'undefined') return;
   localStorage.removeItem(getRoomParticipantKey(roomCode, nickname));
 }
+
+// "Apagar só para mim" — não existe um mecanismo por-participante no
+// banco, então escondemos localmente neste dispositivo, sem afetar o
+// que os outros veem.
+function hiddenMessagesKey(roomId: string): string {
+  return `cipherline_hidden_messages_${roomId}`;
+}
+
+export function getHiddenMessageIds(roomId: string): Set<string> {
+  if (typeof localStorage === 'undefined') return new Set();
+  try {
+    const raw = localStorage.getItem(hiddenMessagesKey(roomId));
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+export function hideMessageLocally(roomId: string, messageId: string) {
+  if (typeof localStorage === 'undefined') return;
+  const ids = getHiddenMessageIds(roomId);
+  ids.add(messageId);
+  localStorage.setItem(hiddenMessagesKey(roomId), JSON.stringify(Array.from(ids)));
+}
