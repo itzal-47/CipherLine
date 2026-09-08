@@ -490,6 +490,9 @@ export default function App() {
             theme={theme}
             onSetTheme={setTheme}
             onClose={() => setShowSettings(false)}
+            onProfileUpdated={() => {
+              if (session) loadProfile(session.user.id);
+            }}
             onSignOut={() => {
               setShowSettings(false);
               handleSignOut();

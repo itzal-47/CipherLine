@@ -1,14 +1,15 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   X, ChevronRight, Bell, Info, FileText, Bug, MessageSquarePlus,
-  UserX, LogOut, Instagram, Mail, Phone, AlertTriangle, Palette,
+  UserX, LogOut, Instagram, Mail, Phone, AlertTriangle, Palette, User, Camera, Check,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { requestNotificationPermission } from '@/lib/push';
+import { ImageUploader } from '@/components/ImageUploader';
 import type { UserProfile } from '@/types';
 
-type SettingsView = 'menu' | 'geral' | 'sobre' | 'termos' | 'bug' | 'sugestao' | 'conta';
+type SettingsView = 'menu' | 'geral' | 'sobre' | 'termos' | 'bug' | 'sugestao' | 'conta' | 'perfil';
 
 interface SettingsScreenProps {
   profile: UserProfile | null;
@@ -17,9 +18,10 @@ interface SettingsScreenProps {
   onAccountDeleted: () => void;
   theme: 'default' | 'overide';
   onSetTheme: (theme: 'default' | 'overide') => void;
+  onProfileUpdated: () => void;
 }
 
-export function SettingsScreen({ profile, onClose, onSignOut, onAccountDeleted, theme, onSetTheme }: SettingsScreenProps) {
+export function SettingsScreen({ profile, onClose, onSignOut, onAccountDeleted, theme, onSetTheme, onProfileUpdated }: SettingsScreenProps) {
   const [view, setView] = useState<SettingsView>('menu');
   const [feedbackText, setFeedbackText] = useState('');
   const [feedbackEmail, setFeedbackEmail] = useState('');
@@ -28,6 +30,42 @@ export function SettingsScreen({ profile, onClose, onSignOut, onAccountDeleted, 
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState('');
+  const [profileDisplayName, setProfileDisplayName] = useState(profile?.display_name || '');
+  const [profileAvatarUrl, setProfileAvatarUrl] = useState('');
+  const [pendingAvatarBlob, setPendingAvatarBlob] = useState<Blob | null>(null);
+  const [showAvatarPicker, setShowAvatarPicker] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileSaved, setProfileSaved] = useState(false);
+
+  useEffect(() => {
+    if (profile?.avatar_path) {
+      import('@/lib/media').then(({ getImageUrl }) => {
+        getImageUrl(profile.avatar_path!).then(setProfileAvatarUrl);
+      });
+    }
+  }, [profile?.avatar_path]);
+
+  const saveProfile = async () => {
+    if (!profile) return;
+    setProfileSaving(true);
+    try {
+      let avatarPath = profile.avatar_path;
+      if (pendingAvatarBlob) {
+        const { uploadAvatar } = await import('@/lib/media');
+        avatarPath = await uploadAvatar(profile.id, pendingAvatarBlob);
+      }
+      await supabase
+        .from('profiles')
+        .update({ display_name: profileDisplayName.trim() || null, avatar_path: avatarPath })
+        .eq('id', profile.id);
+      setPendingAvatarBlob(null);
+      setProfileSaved(true);
+      onProfileUpdated();
+      setTimeout(() => setProfileSaved(false), 2000);
+    } finally {
+      setProfileSaving(false);
+    }
+  };
 
   const submitFeedback = async (type: 'bug' | 'suggestion') => {
     if (!feedbackText.trim()) return;
@@ -73,6 +111,7 @@ export function SettingsScreen({ profile, onClose, onSignOut, onAccountDeleted, 
 
   const menuItems: { view: SettingsView; icon: typeof Info; label: string }[] = [
     { view: 'geral', icon: Bell, label: 'GERAL' },
+    ...(profile ? [{ view: 'perfil' as SettingsView, icon: User, label: 'PERFIL' }] : []),
     { view: 'sobre', icon: Info, label: 'SOBRE' },
     { view: 'termos', icon: FileText, label: 'TERMOS DE USO' },
     { view: 'bug', icon: Bug, label: 'REPORTAR BUG' },
@@ -187,6 +226,72 @@ export function SettingsScreen({ profile, onClose, onSignOut, onAccountDeleted, 
                   </button>
                 </div>
               </motion.div>
+            )}
+
+            {view === 'perfil' && profile && (
+              <motion.div key="perfil" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-4">
+                <div className="glass clip-hud-sm p-4">
+                  <p className="mb-3 font-mono text-[9px] leading-relaxed text-cyber-text-faint">
+                    ISSO É OPCIONAL. POR PADRÃO VOCÊ CONTINUA ANÔNIMO (CÓDIGO GERADO) EM TODA SALA — SÓ APARECE COM SEU PERFIL NAS SALAS ONDE VOCÊ LIGAR ISSO EXPLICITAMENTE (EM "CONFIGURAÇÕES DO CANAL").
+                  </p>
+
+                  <div className="mb-4 flex items-center gap-4">
+                    <button
+                      onClick={() => setShowAvatarPicker(true)}
+                      className="relative h-16 w-16 shrink-0 overflow-hidden rounded-full border border-cyber-green/30 bg-cyber-panel-2"
+                    >
+                      {profileAvatarUrl ? (
+                        <img src={profileAvatarUrl} alt="" className="h-full w-full object-cover" />
+                      ) : (
+                        <div className="flex h-full items-center justify-center text-cyber-text-dim">
+                          <User size={24} />
+                        </div>
+                      )}
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity hover:opacity-100">
+                        <Camera size={16} className="text-white" />
+                      </div>
+                    </button>
+                    <div className="flex-1">
+                      <p className="mb-1 font-mono text-[10px] tracking-widest text-cyber-text-dim">NOME DE PERFIL</p>
+                      <input
+                        type="text"
+                        value={profileDisplayName}
+                        onChange={(e) => setProfileDisplayName(e.target.value)}
+                        maxLength={40}
+                        placeholder={profile.nickname}
+                        className="w-full border border-cyber-border bg-transparent px-2 py-1.5 font-mono text-sm text-cyber-text placeholder:text-cyber-text-faint focus:border-cyber-green/50 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={saveProfile}
+                    disabled={profileSaving}
+                    className="clip-hud-sm flex w-full items-center justify-center gap-2 border border-cyber-green/30 bg-cyber-green/10 px-4 py-3 font-mono text-xs tracking-widest text-cyber-green transition-colors hover:bg-cyber-green/20 disabled:opacity-50"
+                  >
+                    {profileSaved ? (
+                      <>
+                        <Check size={14} /> SALVO
+                      </>
+                    ) : profileSaving ? (
+                      'SALVANDO...'
+                    ) : (
+                      'SALVAR PERFIL'
+                    )}
+                  </button>
+                </div>
+              </motion.div>
+            )}
+
+            {showAvatarPicker && (
+              <ImageUploader
+                onSend={(blob) => {
+                  setPendingAvatarBlob(blob);
+                  setProfileAvatarUrl(URL.createObjectURL(blob));
+                  setShowAvatarPicker(false);
+                }}
+                onCancel={() => setShowAvatarPicker(false)}
+              />
             )}
 
             {view === 'sobre' && (

@@ -99,6 +99,7 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
   const [showChannelSettings, setShowChannelSettings] = useState(false);
   const [editRoomName, setEditRoomName] = useState('');
   const [editIsPublic, setEditIsPublic] = useState(false);
+  const [editShowProfile, setEditShowProfile] = useState(false);
   const [channelSettingsSaving, setChannelSettingsSaving] = useState(false);
   const [showParticipantPanel, setShowParticipantPanel] = useState(false);
   const [burnConfig, setBurnConfig] = useState<BurnConfig>({ mode: 'off', seconds: 0 });
@@ -140,6 +141,11 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
       setEditRoomName(data?.name || '');
       setEditIsPublic(data?.is_public || false);
     });
+    if (userId) {
+      supabase.from('participants').select('show_profile').eq('id', participantId).maybeSingle().then(({ data }) => {
+        setEditShowProfile(data?.show_profile || false);
+      });
+    }
 
     const pasteChannel = supabase
       .channel(`paste-${roomId}`)
@@ -248,6 +254,12 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
         setSystemMessage('FALHA AO SALVAR — VERIFIQUE SE AS MIGRATIONS FORAM APLICADAS');
         setTimeout(() => setSystemMessage(''), 5000);
         return;
+      }
+      if (userId) {
+        await supabase
+          .from('participants')
+          .update({ show_profile: editShowProfile })
+          .eq('id', participantId);
       }
       setRoomName(editRoomName.trim());
       setShowChannelSettings(false);
@@ -399,6 +411,39 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
       setOnlinePeerIds(online);
     }
 
+    // Identidade de perfil: só resolve pra quem ativou "mostrar meu
+    // perfil" nesta sala — uma busca em lote, não uma por mensagem.
+    const profileByParticipantId = new Map<string, { displayName: string | null; avatarUrl: string | null }>();
+    const revealedUserIds = (parts || [])
+      .filter((p: any) => p.show_profile && p.user_id)
+      .map((p: any) => p.user_id as string);
+    if (revealedUserIds.length > 0) {
+      const { data: profilesData } = await supabase
+        .from('profiles')
+        .select('id, display_name, avatar_path')
+        .in('id', revealedUserIds);
+      const avatarUrls = new Map<string, string>();
+      await Promise.all(
+        (profilesData || [])
+          .filter((pr) => pr.avatar_path)
+          .map(async (pr) => {
+            const url = await getImageUrl(pr.avatar_path!);
+            avatarUrls.set(pr.id, url);
+          }),
+      );
+      for (const p of parts || []) {
+        if (p.show_profile && p.user_id) {
+          const pr = (profilesData || []).find((x) => x.id === p.user_id);
+          if (pr) {
+            profileByParticipantId.set(p.id, {
+              displayName: pr.display_name || null,
+              avatarUrl: pr.avatar_path ? avatarUrls.get(pr.id) || null : null,
+            });
+          }
+        }
+      }
+    }
+
     if (existingMsgs) {
       const plaintextById = new Map<string, { plaintext: string; senderNickname: string }>();
       for (const msg of existingMsgs) {
@@ -411,6 +456,7 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
         existingMsgs.map(async (msg) => {
           const { plaintext } = plaintextById.get(msg.id)!;
           const sender = parts?.find((p) => p.id === msg.sender_id);
+          const identity = profileByParticipantId.get(msg.sender_id);
           const msgReactions = (reactions ?? []).filter((r: Reaction) => r.message_id === msg.id);
           const msgReceipts = (receipts ?? []).filter((r: ReadReceipt) => r.message_id === msg.id);
           const msgBurn = msg.burn_config ? jsonToBurnConfig(msg.burn_config) : null;
@@ -419,6 +465,8 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
             id: msg.id,
             senderId: msg.sender_id,
             senderNickname: sender?.nickname || 'UNKNOWN',
+            senderDisplayName: identity?.displayName || null,
+            senderAvatarUrl: identity?.avatarUrl || null,
             encryptedContent: msg.encrypted_content,
             plaintext,
             createdAt: msg.created_at,
@@ -478,9 +526,21 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
           const plaintext = await decryptText(msg.encrypted_content, roomCode);
           const { data: sender } = await supabase
             .from('participants')
-            .select('nickname')
+            .select('nickname, show_profile, user_id')
             .eq('id', msg.sender_id)
             .maybeSingle();
+
+          let senderDisplayName: string | null = null;
+          let senderAvatarUrl: string | null = null;
+          if (sender?.show_profile && sender?.user_id) {
+            const { data: pr } = await supabase
+              .from('profiles')
+              .select('display_name, avatar_path')
+              .eq('id', sender.user_id)
+              .maybeSingle();
+            senderDisplayName = pr?.display_name || null;
+            senderAvatarUrl = pr?.avatar_path ? await getImageUrl(pr.avatar_path) : null;
+          }
 
           const msgBurn = msg.burn_config ? jsonToBurnConfig(msg.burn_config) : null;
 
@@ -500,6 +560,8 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
                 id: msg.id,
                 senderId: msg.sender_id,
                 senderNickname: sender?.nickname || 'UNKNOWN',
+                senderDisplayName,
+                senderAvatarUrl,
                 encryptedContent: msg.encrypted_content,
                 plaintext,
                 createdAt: msg.created_at,
@@ -833,6 +895,8 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
           replyToSenderNickname: replyTo?.senderNickname || null,
           replyToPlaintext: replyTo?.plaintext?.slice(0, 80) || null,
           capsuleUnlockAt: null,
+          senderDisplayName: null,
+          senderAvatarUrl: null,
         },
       ]);
       setInput('');
@@ -945,6 +1009,8 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
             replyToSenderNickname: null,
             replyToPlaintext: null,
             capsuleUnlockAt: null,
+            senderDisplayName: null,
+            senderAvatarUrl: null,
           },
         ]);
         playReceiveSound();
@@ -1009,6 +1075,8 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
             replyToSenderNickname: null,
             replyToPlaintext: null,
             capsuleUnlockAt: null,
+            senderDisplayName: null,
+            senderAvatarUrl: null,
           },
         ]);
       }
@@ -1074,6 +1142,8 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
             replyToSenderNickname: null,
             replyToPlaintext: null,
             capsuleUnlockAt: null,
+            senderDisplayName: null,
+            senderAvatarUrl: null,
           },
         ]);
       }
@@ -1133,6 +1203,8 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
             replyToSenderNickname: null,
             replyToPlaintext: null,
             capsuleUnlockAt: unlockAt.toISOString(),
+            senderDisplayName: null,
+            senderAvatarUrl: null,
           },
         ]);
       }
@@ -2316,6 +2388,35 @@ export function ChatScreen({ roomId, roomCode, participantId, nickname, isPerman
                       PÚBLICO
                     </button>
                   </div>
+
+                  <p className="mb-2 font-mono text-[10px] tracking-widest text-cyber-text-dim">SUA IDENTIDADE NESTA SALA</p>
+                  <div className="mb-4 grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => setEditShowProfile(false)}
+                      className={`clip-hud-sm px-3 py-2 font-mono text-[10px] tracking-widest transition-colors ${
+                        !editShowProfile
+                          ? 'border border-cyber-green/40 bg-cyber-green/10 text-cyber-green'
+                          : 'border border-cyber-border text-cyber-text-dim hover:text-cyber-text'
+                      }`}
+                    >
+                      ANÔNIMO
+                    </button>
+                    <button
+                      onClick={() => setEditShowProfile(true)}
+                      className={`clip-hud-sm px-3 py-2 font-mono text-[10px] tracking-widest transition-colors ${
+                        editShowProfile
+                          ? 'border border-cyber-magenta/40 bg-cyber-magenta/10 text-cyber-magenta'
+                          : 'border border-cyber-border text-cyber-text-dim hover:text-cyber-text'
+                      }`}
+                    >
+                      MEU PERFIL
+                    </button>
+                  </div>
+                  <p className="mb-4 font-mono text-[9px] leading-relaxed text-cyber-text-faint">
+                    {editShowProfile
+                      ? 'AS PESSOAS NESTA SALA VÃO VER SEU NOME E FOTO DE PERFIL, EM VEZ DO CÓDIGO ANÔNIMO'
+                      : 'VOCÊ CONTINUA ANÔNIMO NESTA SALA, MESMO LOGADO'}
+                  </p>
                 </>
               ) : (
                 <p className="mb-4 font-mono text-[9px] leading-relaxed text-cyber-text-faint">

@@ -243,8 +243,17 @@ export function ChatMessage({ message, roomCode, onDestroy, onDeleteForMe, onRea
     >
       <div className={`flex min-w-0 max-w-[80%] flex-col ${message.isOwn ? 'items-end' : 'items-start'}`}>
         {!message.isOwn && (
-          <div className="mb-1 ml-1 break-all font-mono text-[10px] tracking-widest text-cyber-text-dim">
-            {message.senderNickname}
+          <div className="mb-1 ml-1 flex items-center gap-1.5">
+            {message.senderAvatarUrl && (
+              <img
+                src={message.senderAvatarUrl}
+                alt=""
+                className="h-4 w-4 rounded-full object-cover"
+              />
+            )}
+            <span className="break-all font-mono text-[10px] tracking-widest text-cyber-text-dim">
+              {message.senderDisplayName || message.senderNickname}
+            </span>
           </div>
         )}
         <motion.div

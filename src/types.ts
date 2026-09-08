@@ -6,6 +6,8 @@ export interface UserProfile {
   nickname: string;
   created_at: string;
   theme_preference?: 'default' | 'overide' | null;
+  display_name?: string | null;
+  avatar_path?: string | null;
 }
 
 export interface RoomMember {
@@ -134,4 +136,6 @@ export interface DecodedMessage {
   replyToSenderNickname: string | null;
   replyToPlaintext: string | null;
   capsuleUnlockAt: string | null;
+  senderDisplayName: string | null;
+  senderAvatarUrl: string | null;
 }
