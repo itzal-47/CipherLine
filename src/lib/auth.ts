@@ -33,7 +33,7 @@ export function useAuth() {
   }, []);
 
   const loadProfile = async (userId: string) => {
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('profiles')
       .select('*')
       .eq('id', userId)

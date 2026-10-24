@@ -1,14 +1,21 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { X, LogIn, AlertTriangle, Clock } from 'lucide-react';
+import { X, LogIn, AlertTriangle } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { Typewriter } from '@/components/Typewriter';
-import { getDeviceId, getSavedParticipantId, saveParticipantId } from '@/lib/device';
+import { saveParticipantCreds } from '@/lib/device';
+import { joinRoomSecure } from '@/lib/participant';
 
 interface JoinScreenProps {
   nickname: string;
   onBack: () => void;
-  onChannelJoined: (roomId: string, roomCode: string, participantId: string, isPermanent: boolean) => void;
+  onChannelJoined: (
+    roomId: string,
+    roomCode: string,
+    participantId: string,
+    secret: string | null,
+    isPermanent: boolean,
+  ) => void;
   onExpired: (roomCode: string) => void;
   userId?: string;
   initialCode?: string;
@@ -23,9 +30,7 @@ export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired, userI
     return raw.toUpperCase().replace(/[^A-Z0-9-]/g, '');
   };
 
-  // Garante que a sala fica salva no dashboard de um usuário logado, mesmo
-  // quando ele entra por código em vez de criar a sala — sem isso, salas
-  // acessadas por código nunca apareciam de novo depois de sair.
+  // Garante que a sala fica salva no dashboard de um usuário logado.
   const ensureRoomMembership = async (roomId: string) => {
     if (!userId) return;
     const { data: existing } = await supabase
@@ -39,8 +44,6 @@ export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired, userI
         .from('room_members')
         .insert({ room_id: roomId, user_id: userId, role: 'member' });
       if (error) {
-        // tenta mais uma vez antes de desistir — sem isso a sala não
-        // aparece depois no dashboard
         await supabase
           .from('room_members')
           .insert({ room_id: roomId, user_id: userId, role: 'member' });
@@ -63,7 +66,6 @@ export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired, userI
     });
 
     if (roomErr || !roomData || roomData.length === 0) {
-      // Check if room exists but is expired
       const { data: expiredRoom } = await supabase.rpc('find_room_by_code_any', { p_code: trimmed });
       if (expiredRoom && expiredRoom.length > 0) {
         onExpired(trimmed);
@@ -78,9 +80,7 @@ export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired, userI
     const room = roomData[0];
     const isPermanent = room.is_permanent ?? false;
 
-    // Gatilho de inatividade: se o criador configurou autodestruição por
-    // inatividade e o prazo já passou, a sala é destruída aqui mesmo, antes
-    // de deixar qualquer um entrar.
+    // Gatilho de inatividade: verifica antes de deixar entrar.
     const { data: mediaMsgs } = await supabase
       .from('messages')
       .select('storage_path')
@@ -99,63 +99,20 @@ export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired, userI
       return;
     }
 
-    // Multi-device sync: check if we already have a participant_id for this room+nickname
-    const savedParticipantId = getSavedParticipantId(trimmed, nickname);
-    if (savedParticipantId) {
-      // Verify the participant still exists
-      const { data: existing } = await supabase
-        .from('participants')
-        .select('id')
-        .eq('id', savedParticipantId)
-        .maybeSingle();
-
-      if (existing) {
-        // Update last_seen and device_id to reconnect
-        await supabase
-          .from('participants')
-          .update({ last_seen: new Date().toISOString(), device_id: getDeviceId(), user_id: userId || null })
-          .eq('id', savedParticipantId);
-        await ensureRoomMembership(room.id);
-        onChannelJoined(room.id, room.code, savedParticipantId, isPermanent);
-        return;
-      }
-    }
-
-    // Check if a participant with the same nickname already exists in this room
-    const { data: existingParticipant } = await supabase
-      .from('participants')
-      .select('id')
-      .eq('room_id', room.id)
-      .eq('nickname', nickname)
-      .maybeSingle();
-
-    if (existingParticipant) {
-      // Reuse existing participant (same nickname = same logical person)
-      await supabase
-        .from('participants')
-        .update({ last_seen: new Date().toISOString(), device_id: getDeviceId(), user_id: userId || null })
-        .eq('id', existingParticipant.id);
-      saveParticipantId(trimmed, nickname, existingParticipant.id);
-      await ensureRoomMembership(room.id);
-      onChannelJoined(room.id, room.code, existingParticipant.id, isPermanent);
-      return;
-    }
-
-    const { data: participant, error: pErr } = await supabase
-      .from('participants')
-      .insert({ room_id: room.id, nickname, device_id: getDeviceId(), user_id: userId || null })
-      .select()
-      .single();
-
-    if (pErr || !participant) {
-      setError('FALHA AO ENTRAR NO CANAL');
+    // Entrada segura — a RPC trata de reconexão, device_id, user_id
+    // e devolve o segredo único que será exigido nas escritas.
+    let joined;
+    try {
+      joined = await joinRoomSecure(trimmed, nickname, userId || null);
+    } catch (err) {
+      setError((err as Error).message || 'FALHA AO ENTRAR NO CANAL');
       setLoading(false);
       return;
     }
 
-    saveParticipantId(trimmed, nickname, participant.id);
-    await ensureRoomMembership(room.id);
-    onChannelJoined(room.id, room.code, participant.id, isPermanent);
+    saveParticipantCreds(trimmed, nickname, joined.participantId, joined.secret);
+    await ensureRoomMembership(joined.roomId);
+    onChannelJoined(joined.roomId, trimmed, joined.participantId, joined.secret, isPermanent);
   };
 
   return (

@@ -19,12 +19,18 @@ function base64ToBuf(b64: string): ArrayBuffer {
   return bytes.buffer;
 }
 
-let cachedKey: CryptoKey | null = null;
-let cachedCode: string | null = null;
+// Cache multi-sala (evita recalcular PBKDF2 a cada mensagem no Dashboard)
+const keyCache = new Map<string, CryptoKey>();
+const MAX_CACHE_SIZE = 15; // Guarda as ultimas 15 salas abertas
 
 export async function deriveKey(roomCode: string): Promise<CryptoKey> {
-  if (cachedKey && cachedCode === roomCode) return cachedKey;
-  cachedCode = roomCode;
+  if (keyCache.has(roomCode)) {
+    const key = keyCache.get(roomCode)!;
+    // Move para o fim do Map (LRU simples)
+    keyCache.delete(roomCode);
+    keyCache.set(roomCode, key);
+    return key;
+  }
 
   const salt = enc.encode(`cipherline-salt-${roomCode}`);
   const baseKey = await crypto.subtle.importKey(
@@ -48,7 +54,13 @@ export async function deriveKey(roomCode: string): Promise<CryptoKey> {
     ['encrypt', 'decrypt'],
   );
 
-  cachedKey = key;
+  // Se o cache estiver cheio, remove o mais antigo (primeiro do Map)
+  if (keyCache.size >= MAX_CACHE_SIZE) {
+    const oldestKey = keyCache.keys().next().value;
+    if (oldestKey) keyCache.delete(oldestKey);
+  }
+
+  keyCache.set(roomCode, key);
   return key;
 }
 
@@ -122,6 +134,5 @@ export function generateRoomCode(): string {
 }
 
 export function clearCachedKey() {
-  cachedKey = null;
-  cachedCode = null;
+  keyCache.clear();
 }

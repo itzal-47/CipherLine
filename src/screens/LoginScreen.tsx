@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Mail, Lock, User, AlertTriangle, ArrowRight, RefreshCw, Ghost } from 'lucide-react';
+import { Mail, Lock, AlertTriangle, ArrowRight, RefreshCw, Ghost } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 interface LoginScreenProps {
@@ -13,7 +13,7 @@ type Phase = 'form' | 'verify';
 
 export function LoginScreen({ onGuest, onAuthSuccess }: LoginScreenProps) {
   const [mode, setMode] = useState<Mode>('signin');
-  const [phase, setPhase] = useState<Phase>('form');
+  const [phase] = useState<Phase>('form');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -126,7 +126,7 @@ export function LoginScreen({ onGuest, onAuthSuccess }: LoginScreenProps) {
     setError('');
     try {
       await sendVerificationCode(email);
-    } catch (err: any) {
+    } catch {
       setError('FALHA AO REENVIAR CÓDIGO');
     }
   };

@@ -11,12 +11,15 @@ import { DashboardScreen } from '@/screens/DashboardScreen';
 import { SettingsScreen } from '@/screens/SettingsScreen';
 import { clearCachedKey } from '@/lib/crypto';
 import { supabase } from '@/lib/supabase';
+import { joinRoomSecure, verifyParticipant } from '@/lib/participant';
+import { clearParticipantCreds } from '@/lib/device';
 import type { Screen, UserProfile } from '@/types';
 
 interface ChatSession {
   roomId: string;
   roomCode: string;
   participantId: string;
+  secret: string | null;
   isPermanent: boolean;
 }
 
@@ -25,9 +28,7 @@ const CHAT_SESSION_KEY = 'cipherline_chat_session';
 function saveChatSession(session: ChatSession, nickname: string) {
   try {
     localStorage.setItem(CHAT_SESSION_KEY, JSON.stringify({ ...session, nickname }));
-  } catch {
-    // localStorage indisponível (modo privado, etc.) — segue sem persistir
-  }
+  } catch {}
 }
 
 function loadChatSession(): (ChatSession & { nickname: string }) | null {
@@ -42,9 +43,7 @@ function loadChatSession(): (ChatSession & { nickname: string }) | null {
 function clearChatSession() {
   try {
     localStorage.removeItem(CHAT_SESSION_KEY);
-  } catch {
-    // ignore
-  }
+  } catch {}
 }
 
 export default function App() {
@@ -67,16 +66,34 @@ export default function App() {
     () => (localStorage.getItem('cipherline_theme') as 'default' | 'overide') || 'default',
   );
 
+  // Toast global para erros de DM / navegação
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
-  // Aplica a preferência salva na conta assim que o perfil carrega
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const roomParam = params.get('room');
+    if (roomParam) {
+      setPrefilledJoinCode(roomParam.toUpperCase());
+      const cleanUrl = window.location.pathname;
+      window.history.replaceState({}, '', cleanUrl);
+    }
+  }, []);
+
   useEffect(() => {
     if (profile?.theme_preference) {
       setThemeState(profile.theme_preference as 'default' | 'overide');
     }
   }, [profile?.theme_preference]);
+
+  useEffect(() => {
+    if (!toastMessage) return;
+    const timer = setTimeout(() => setToastMessage(null), 4000);
+    return () => clearTimeout(timer);
+  }, [toastMessage]);
 
   const setTheme = async (next: 'default' | 'overide') => {
     setThemeState(next);
@@ -87,44 +104,56 @@ export default function App() {
   };
 
   useEffect(() => {
-    // As duas verificações de inicialização (sessão de login + sala ativa
-    // salva) rodam em paralelo e são coordenadas aqui antes de decidir a
-    // tela final — evitando que o carregamento do perfil "vença a corrida"
-    // e jogue o usuário de volta pro dashboard mesmo quando ele estava
-    // legitimamente voltando para uma sala aberta (ex: trocou de aba).
     let cancelled = false;
 
     const bootstrap = async () => {
-      const [{ data: { session: s } }, restoredChat] = await Promise.all([
-        supabase.auth.getSession(),
-        restoreChatSessionIfValid(),
-      ]);
+      try {
+        // allSettled em vez de all: se a rede falhar numa das promises,
+        // a outra nao e descartada. Cada resultado e tratado individualmente.
+        const [sessionRes, chatRes] = await Promise.allSettled([
+          supabase.auth.getSession(),
+          restoreChatSessionIfValid(),
+        ]);
 
-      if (cancelled) return;
-
-      setSession(s);
-
-      let loadedProfile: UserProfile | null = null;
-      if (s) {
-        const { data } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', s.user.id)
-          .maybeSingle();
         if (cancelled) return;
-        loadedProfile = (data as UserProfile) || null;
-        setProfile(loadedProfile);
-      }
 
-      if (restoredChat) {
-        setChatSession(restoredChat.session);
-        setNickname(restoredChat.nickname);
-        setScreen('chat');
-      } else if (loadedProfile) {
-        setScreen('dashboard');
-      }
+        if (sessionRes.status === 'rejected') {
+          console.warn('[CipherLine] Falha ao obter sessao auth no arranque:', sessionRes.reason);
+        }
+        if (chatRes.status === 'rejected') {
+          console.warn('[CipherLine] Falha ao restaurar sessao de chat:', chatRes.reason);
+        }
 
-      setAuthLoading(false);
+        const s = sessionRes.status === 'fulfilled' ? sessionRes.value.data.session : null;
+        const restoredChat = chatRes.status === 'fulfilled' ? chatRes.value : null;
+
+        setSession(s);
+
+        let loadedProfile: UserProfile | null = null;
+        if (s) {
+          const { data } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', s.user.id)
+            .maybeSingle();
+          if (cancelled) return;
+          loadedProfile = (data as UserProfile) || null;
+          setProfile(loadedProfile);
+        }
+
+        if (restoredChat) {
+          setChatSession(restoredChat.session);
+          setNickname(restoredChat.nickname);
+          setScreen('chat');
+        } else if (loadedProfile) {
+          setScreen('dashboard');
+        }
+      } catch (err) {
+        console.error('[CipherLine] Falha no bootstrap inicial:', err);
+        setToastMessage('Falha ao iniciar a aplicacao. Verifica a ligacao.');
+      } finally {
+        if (!cancelled) setAuthLoading(false);
+      }
     };
 
     bootstrap();
@@ -156,26 +185,34 @@ export default function App() {
     }
   }, [chatSession, nickname]);
 
-  // Ao voltar de background (troca de aba, minimizar, etc.) sem recarregar
-  // Nota: removemos um verificador que rodava a cada troca de aba e
-  // expulsava o usuário da sala se uma única consulta falhasse (sem
-  // nenhuma tentativa extra) — isso causava saídas "aleatórias" da sala.
-  // A própria ChatScreen já cuida de reconexão e staleness com mais
-  // cuidado (backoff, período de graça), então não precisa desse
-  // atalho agressivo aqui no nível do App.
-
   const restoreChatSessionIfValid = async (): Promise<{ session: ChatSession; nickname: string } | null> => {
     const saved = loadChatSession();
     if (!saved) return null;
 
-    const { data: participant } = await supabase
-      .from('participants')
-      .select('id, room_id')
-      .eq('id', saved.participantId)
-      .maybeSingle();
+    const secret = (saved as any).secret ?? null;
 
-    if (!participant) {
+    // Sessao de formato antigo (sem secret). O servidor ja nao aceita estas
+    // credenciais desde a correcao do verify_participant. Limpa e forca
+    // reentrada via dashboard, que gera um secret novo.
+    if (!secret) {
       clearChatSession();
+      clearParticipantCreds(saved.roomCode, saved.nickname);
+      return null;
+    }
+
+    let valid = false;
+    try {
+      valid = await verifyParticipant(saved.participantId, secret);
+    } catch (err) {
+      // Falha de rede ao verificar. Preserva a sessao local para tentar
+      // novamente no proximo arranque (nao apaga o localStorage).
+      console.warn('[CipherLine] Nao foi possivel verificar participante agora:', err);
+      return null;
+    }
+
+    if (!valid) {
+      clearChatSession();
+      clearParticipantCreds(saved.roomCode, saved.nickname);
       return null;
     }
 
@@ -184,6 +221,7 @@ export default function App() {
         roomId: saved.roomId,
         roomCode: saved.roomCode,
         participantId: saved.participantId,
+        secret,
         isPermanent: saved.isPermanent,
       },
       nickname: saved.nickname,
@@ -198,7 +236,9 @@ export default function App() {
       .maybeSingle();
     if (data) {
       setProfile(data as UserProfile);
-      setScreen('dashboard');
+      // Só muda para o dashboard se o utilizador estiver no login ou no home.
+      // Se já estiver no chat (ex: a ler uma DM), mantém-se lá!
+      setScreen((prev) => (prev === 'login' || prev === 'home' ? 'dashboard' : prev));
     }
     setAuthLoading(false);
   };
@@ -208,8 +248,14 @@ export default function App() {
     setScreen(target);
   };
 
-  const handleChannelCreated = (roomId: string, roomCode: string, participantId: string, isPermanent: boolean) => {
-    setChatSession({ roomId, roomCode, participantId, isPermanent });
+  const handleChannelCreated = (
+    roomId: string,
+    roomCode: string,
+    participantId: string,
+    secret: string | null,
+    isPermanent: boolean,
+  ) => {
+    setChatSession({ roomId, roomCode, participantId, secret, isPermanent });
     setScreen('chat');
   };
 
@@ -219,28 +265,36 @@ export default function App() {
   };
 
   const handleLeave = useCallback(() => {
+    if (chatSession) {
+      clearParticipantCreds(chatSession.roomCode, nickname);
+    }
     clearCachedKey();
     setChatSession(null);
     setNickname('');
     if (profile) {
       setScreen('dashboard');
-    } else if (isGuest) {
-      setScreen('home');
     } else {
       setScreen('home');
     }
-  }, [profile, isGuest]);
+  }, [profile, chatSession, nickname]);
 
   const handleGuest = () => {
     setIsGuest(true);
     setScreen('home');
   };
 
-  const handleAuthSuccess = () => {
-    // onAuthStateChange will load profile and set screen to dashboard
-  };
+  const handleAuthSuccess = () => {};
 
   const handleSignOut = async () => {
+    // Limpa estado de chat ANTES de fazer signOut, para que o
+    // onAuthStateChange nao dispare com uma sessao de chat "orfa".
+    if (chatSession) {
+      clearParticipantCreds(chatSession.roomCode, nickname);
+    }
+    clearChatSession();
+    clearCachedKey();
+    setChatSession(null);
+    setNickname('');
     await supabase.auth.signOut();
     setSession(null);
     setProfile(null);
@@ -248,77 +302,61 @@ export default function App() {
     setScreen('home');
   };
 
-  const handleDashboardJoinRoom = async (roomCode: string, roomId: string, isPermanent: boolean) => {
+  const handleDashboardJoinRoom = async (roomCode: string, _roomId: string, _isPermanent: boolean) => {
     const name = profile?.nickname || 'USER';
     setNickname(name);
 
-    // Reusa um participante existente com o mesmo apelido nesta sala (mesma
-    // pessoa reconectando), ou cria um novo — nunca inventa um ID que não
-    // existe no banco (isso quebrava a restauração de sessão e deixava
-    // presença "fantasma" quando a pessoa saía).
-    const { data: existing } = await supabase
-      .from('participants')
-      .select('id')
-      .eq('room_id', roomId)
-      .eq('nickname', name)
-      .maybeSingle();
-
-    let participantId: string;
-    if (existing) {
-      await supabase
-        .from('participants')
-        .update({ last_seen: new Date().toISOString(), user_id: profile?.id || null })
-        .eq('id', existing.id);
-      participantId = existing.id;
-    } else {
-      const { data: created, error } = await supabase
-        .from('participants')
-        .insert({ room_id: roomId, nickname: name, user_id: profile?.id || null })
-        .select()
-        .single();
-      if (error || !created) return;
-      participantId = created.id;
+    try {
+      const result = await joinRoomSecure(roomCode, name, profile?.id || null);
+      setChatSession({
+        roomId: result.roomId,
+        roomCode,
+        participantId: result.participantId,
+        secret: result.secret,
+        isPermanent: result.isPermanent,
+      });
+      setScreen('chat');
+    } catch (err) {
+      console.error('Falha ao entrar na sala:', err);
+      const msg = (err as Error)?.message || '';
+      if (msg.toUpperCase().includes('EXPIRADA')) {
+        // Se a sala expirou, leva o utilizador para o ecrã de sala expirada
+        setExpiredCode(roomCode);
+        setScreen('expired');
+      } else {
+        setToastMessage('Não foi possível entrar nessa sala. Tenta novamente.');
+      }
     }
-
-    setChatSession({ roomId, roomCode, participantId, isPermanent });
-    setScreen('chat');
   };
 
   const handleOpenPrivateReply = async (
-    dmRoomId: string,
     dmRoomCode: string,
+    _dmRoomId: string,
     quote: { text: string; sender: string; roomName: string },
   ) => {
     const name = profile?.nickname || 'USER';
     setNickname(name);
 
-    const { data: existing } = await supabase
-      .from('participants')
-      .select('id')
-      .eq('room_id', dmRoomId)
-      .eq('nickname', name)
-      .maybeSingle();
-
-    let dmParticipantId: string;
-    if (existing) {
-      await supabase
-        .from('participants')
-        .update({ last_seen: new Date().toISOString(), user_id: profile?.id || null })
-        .eq('id', existing.id);
-      dmParticipantId = existing.id;
-    } else {
-      const { data: created, error } = await supabase
-        .from('participants')
-        .insert({ room_id: dmRoomId, nickname: name, user_id: profile?.id || null })
-        .select()
-        .single();
-      if (error || !created) return;
-      dmParticipantId = created.id;
+    try {
+      const result = await joinRoomSecure(dmRoomCode, name, profile?.id || null);
+      setPendingQuote(quote);
+      setChatSession({
+        roomId: result.roomId,
+        roomCode: dmRoomCode,
+        participantId: result.participantId,
+        secret: result.secret,
+        isPermanent: result.isPermanent,
+      });
+      setScreen('chat');
+    } catch (err) {
+      console.error('Falha ao abrir conversa privada:', err);
+      const msg = (err as Error)?.message || '';
+      setToastMessage(
+        msg.toUpperCase().includes('SALA NÃO ENCONTRADA') || msg.includes('FALHA')
+          ? 'Não foi possível abrir a conversa privada. Tenta novamente em instantes.'
+          : 'Falha ao abrir a conversa privada. Verifica a tua ligação.',
+      );
     }
-
-    setPendingQuote(quote);
-    setChatSession({ roomId: dmRoomId, roomCode: dmRoomCode, participantId: dmParticipantId, isPermanent: true });
-    setScreen('chat');
   };
 
   const handleDashboardCreate = () => {
@@ -332,7 +370,6 @@ export default function App() {
     setScreen('join');
   };
 
-  // Panic mode: double ESC
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
@@ -361,7 +398,6 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [session]);
 
-  // Loading state
   if (authLoading) {
     return (
       <div className="app-viewport relative w-screen overflow-hidden bg-cyber-bg">
@@ -445,7 +481,8 @@ export default function App() {
               nickname={nickname}
               onBack={() => {
                 setPrefilledJoinCode('');
-                profile ? setScreen('dashboard') : setScreen('home');
+                if (profile) setScreen('dashboard');
+                else setScreen('home');
               }}
               onChannelJoined={(...args) => {
                 setPrefilledJoinCode('');
@@ -470,6 +507,7 @@ export default function App() {
               roomId={chatSession.roomId}
               roomCode={chatSession.roomCode}
               participantId={chatSession.participantId}
+              participantSecret={chatSession.secret || ''}
               nickname={nickname}
               isPermanent={chatSession.isPermanent}
               onLeave={handleLeave}
@@ -499,11 +537,38 @@ export default function App() {
             }}
             onAccountDeleted={() => {
               setShowSettings(false);
+              // Conta eliminada - limpar tudo o que era local
+              if (chatSession) {
+                clearParticipantCreds(chatSession.roomCode, nickname);
+              }
+              clearChatSession();
+              clearCachedKey();
+              setChatSession(null);
+              setNickname('');
               setSession(null);
               setProfile(null);
+              setIsGuest(false);
               setScreen('home');
             }}
           />
+        )}
+      </AnimatePresence>
+
+      {/* Toast global — erros de navegação / DM */}
+      <AnimatePresence>
+        {toastMessage && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="pointer-events-none absolute bottom-6 left-1/2 z-[200] -translate-x-1/2"
+          >
+            <div className="clip-hud-sm border border-cyber-red/40 bg-cyber-bg/95 px-4 py-3 backdrop-blur-md shadow-[0_0_20px_rgba(255,51,102,0.2)]">
+              <span className="font-mono text-[11px] tracking-widest text-cyber-red">
+                [ ! ] {toastMessage}
+              </span>
+            </div>
+          </motion.div>
         )}
       </AnimatePresence>
     </div>

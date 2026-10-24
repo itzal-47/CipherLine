@@ -3,12 +3,16 @@ import { encryptBinary, decryptBinary } from './crypto';
 
 const BUCKET = 'cipherline-media';
 
+// ============================================================
+// ÁUDIO (já era cifrado)
+// ============================================================
+
 export async function uploadEncryptedAudio(
   roomId: string,
   messageId: string,
   audioBlob: Blob,
   roomCode: string,
-  onProgress?: (pct: number) => void,
+  _onProgress?: (pct: number) => void,
 ): Promise<string> {
   const arrayBuffer = await audioBlob.arrayBuffer();
   const encrypted = await encryptBinary(arrayBuffer, roomCode);
@@ -41,11 +45,70 @@ export async function downloadAndDecryptAudio(
   return new Blob([decrypted], { type: 'audio/webm' });
 }
 
+// ============================================================
+// IMAGENS DE MENSAGENS (cifradas a partir do LOTE 7.1)
+// ============================================================
+
+export async function uploadEncryptedImage(
+  roomId: string,
+  messageId: string,
+  imageBlob: Blob,
+  roomCode: string,
+  _onProgress?: (pct: number) => void,
+): Promise<string> {
+  const arrayBuffer = await imageBlob.arrayBuffer();
+  const encrypted = await encryptBinary(arrayBuffer, roomCode);
+  const encryptedBlob = new Blob([encrypted], { type: 'application/octet-stream' });
+  const path = `images/${roomId}/${messageId}.enc`;
+
+  const { error } = await supabase.storage
+    .from(BUCKET)
+    .upload(path, encryptedBlob, {
+      contentType: 'application/octet-stream',
+      upsert: true,
+    });
+
+  if (error) throw error;
+  return path;
+}
+
+/**
+ * Baixa uma imagem de mensagem e tenta decifrá-la com a chave da sala.
+ *
+ * Compatibilidade: se a decifra falhar (imagem antiga, upload antes do
+ * LOTE 7.1, em claro no bucket), devolve os bytes como estão — o
+ * chamador recebe sempre um Blob válido, cifrado ou não.
+ */
+export async function downloadAndDecryptImage(
+  storagePath: string,
+  roomCode: string,
+): Promise<Blob> {
+  const { data, error } = await supabase.storage
+    .from(BUCKET)
+    .download(storagePath);
+
+  if (error || !data) throw error ?? new Error('Download failed');
+
+  const rawBuffer = await data.arrayBuffer();
+
+  try {
+    const decrypted = await decryptBinary(rawBuffer, roomCode);
+    return new Blob([decrypted], { type: 'image/jpeg' });
+  } catch {
+    // Imagem legacy em claro — devolve como está
+    return new Blob([rawBuffer], { type: 'image/jpeg' });
+  }
+}
+
+// ============================================================
+// AVATARES E FUNDOS (não cifrados — não têm roomCode)
+// ============================================================
+
 export async function uploadImage(
   roomId: string,
   messageId: string,
   imageBlob: Blob,
-  onProgress?: (pct: number) => void,
+  _onProgress?: (pct: number) => void,
 ): Promise<string> {
   const path = `images/${roomId}/${messageId}.jpg`;
 
@@ -91,11 +154,25 @@ export async function uploadBackgroundImage(
   return path;
 }
 
-export async function getImageUrl(storagePath: string): Promise<string> {
-  const { data } = supabase.storage
-    .from(BUCKET)
-    .getPublicUrl(storagePath);
-  return data.publicUrl;
+// Gera um URL assinado (validade de 1 hora) para um ficheiro no bucket privado.
+// Retorna null se o ficheiro nao existir ou se houver erro.
+export async function getImageUrl(storagePath: string): Promise<string | null> {
+  try {
+    const { data, error } = await supabase.storage
+      .from(BUCKET)
+      .createSignedUrl(storagePath, 3600); // 1 hora
+    if (error) throw error;
+    return data.signedUrl;
+  } catch (err) {
+    console.warn('[media] Falha ao gerar signed URL:', err);
+    return null;
+  }
+}
+
+// Mantemos um atalho sincrono que retorna vazio, para nao quebrar imports antigos.
+// (Nao usar em <img> ou <audio> diretamente, pois nao vai funcionar.)
+export function getPublicUrlSync(_storagePath: string): string {
+  return '';
 }
 
 export async function downloadImage(storagePath: string): Promise<Blob> {

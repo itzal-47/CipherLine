@@ -1,10 +1,10 @@
-import { createClient } from "npm:@supabase/supabase-js@2";
+import { createClient } from "npm:@supabase/supabase-js@2.57.4";
+import webpush from "npm:web-push@3.6.7";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers":
-    "Content-Type, Authorization, X-Client-Info, Apikey",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
 Deno.serve(async (req: Request) => {
@@ -13,22 +13,59 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const vapidPublicKey = Deno.env.get("VAPID_PUBLIC_KEY");
+    const vapidPrivateKey = Deno.env.get("VAPID_PRIVATE_KEY");
+
+    // ============================================================
+    // AUTENTICAÇÃO
+    //
+    // Esta função é chamada pelo trigger SQL (não por utilizadores), e o
+    // trigger envia o service_role_key no header Authorization. Só quem
+    // tem esse valor pode disparar pushes — evita spam de notificações.
+    // ============================================================
+    const authHeader = req.headers.get("Authorization");
+    const expectedToken = `Bearer ${serviceRoleKey}`;
+    if (!authHeader || authHeader !== expectedToken) {
+      return new Response(
+        JSON.stringify({ error: "Unauthorized" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    if (!vapidPublicKey || !vapidPrivateKey) {
+      return new Response(
+        JSON.stringify({ error: "VAPID keys not configured" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    // Configura o web-push com o par VAPID. O "subject" é um mailto:
+    // ou URL de contacto — exigido pelo protocolo para que os serviços de
+    // push possam contactar o remetente em caso de abuso.
+    webpush.setVapidDetails(
+      "mailto:Edivaldotc16@gmail.com",
+      vapidPublicKey,
+      vapidPrivateKey,
+    );
+
     const { record } = await req.json();
     const roomId = record?.room_id;
     const senderId = record?.sender_id;
 
     if (!roomId || !senderId) {
-      return new Response(JSON.stringify({ error: "Missing room_id or sender_id" }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ error: "Missing room_id or sender_id" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
     }
 
-    const supabaseUrl = Deno.env.get("SUPABASE_URL") as string;
-    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") as string;
-    const supabase = createClient(supabaseUrl, serviceRoleKey);
+    const supabase = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
 
-    // Get all participants in the room except the sender
+    // Todos os participantes da sala, excepto o remetente
     const { data: participants, error: pErr } = await supabase
       .from("participants")
       .select("id")
@@ -36,80 +73,86 @@ Deno.serve(async (req: Request) => {
       .neq("id", senderId);
 
     if (pErr || !participants || participants.length === 0) {
-      return new Response(JSON.stringify({ sent: 0 }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ sent: 0, reason: "no_participants" }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
     }
 
     const participantIds = participants.map((p) => p.id);
 
-    // Get push subscriptions for those participants
+    // Subscrições desses participantes — incluindo o id para podermos
+    // remover as expiradas depois.
     const { data: subscriptions, error: sErr } = await supabase
       .from("push_subscriptions")
-      .select("subscription")
+      .select("id, subscription")
       .in("participant_id", participantIds);
 
     if (sErr || !subscriptions || subscriptions.length === 0) {
-      return new Response(JSON.stringify({ sent: 0 }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    // Get room code for the notification
-    const { data: room } = await supabase
-      .from("rooms")
-      .select("code")
-      .eq("id", roomId)
-      .single();
-
-    const roomCode = room?.code || "CANAL";
-
-    const vapidPrivateKey = Deno.env.get("VAPID_PRIVATE_KEY") as string;
-    if (!vapidPrivateKey) {
       return new Response(
-        JSON.stringify({ error: "VAPID_PRIVATE_KEY not configured" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        JSON.stringify({ sent: 0, reason: "no_subscriptions" }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    // Send push to each subscription
-    // Note: We use Web Push protocol via the subscription endpoint
-    // Since we can't use the web-push npm library easily in Deno,
-    // we send a simple JSON payload to each subscription endpoint
+    // Nome da sala para a notificação
+    const { data: room } = await supabase
+      .from("rooms")
+      .select("code, name")
+      .eq("id", roomId)
+      .single();
+
+    const roomLabel = room?.name || room?.code || "CANAL";
+
     const payload = JSON.stringify({
       title: "CIPHERLINE",
-      body: `Nova mensagem em ${roomCode}`,
+      body: `Nova mensagem em ${roomLabel}`,
+      roomCode: room?.code || null,
+      tag: `cipherline-${roomId}`,
     });
 
     let sentCount = 0;
-    for (const sub of subscriptions) {
-      try {
-        const subscription = sub.subscription;
-        // Use the Web Push API by sending to the subscription endpoint
-        // This is a simplified version - full VAPID signing requires
-        // the web-push library or manual JWT signing
-        const response = await fetch(subscription.endpoint, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/octet-stream",
-            "TTL": "3600",
-          },
-          body: new TextEncoder().encode(payload),
-        }).catch(() => null);
+    const toDelete: string[] = [];
 
-        if (response && response.ok) sentCount++;
-      } catch {
-        // Continue to next subscription on error
+    // Envia em paralelo (mais rápido que sequencial; se a lista for muito
+    // grande, isto pode ser limitado com Promise.allSettled em lotes).
+    const results = await Promise.allSettled(
+      subscriptions.map(async (sub) => {
+        try {
+          await webpush.sendNotification(sub.subscription, payload);
+          return { id: sub.id, ok: true };
+        } catch (err: any) {
+          const statusCode = err?.statusCode ?? 0;
+          // 404/410 = subscrição morta. 403 = VAPID mal configurado mas
+          // não vamos apagar por isso. 429 = rate-limited, tentar de novo depois.
+          if (statusCode === 404 || statusCode === 410) {
+            return { id: sub.id, ok: false, dead: true };
+          }
+          return { id: sub.id, ok: false, dead: false };
+        }
+      }),
+    );
+
+    for (const r of results) {
+      if (r.status === "fulfilled") {
+        if (r.value.ok) sentCount++;
+        if (r.value.dead) toDelete.push(r.value.id);
       }
     }
 
-    return new Response(JSON.stringify({ sent: sentCount }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    // Limpa subscrições mortas em bloco
+    if (toDelete.length > 0) {
+      await supabase.from("push_subscriptions").delete().in("id", toDelete);
+    }
+
+    return new Response(
+      JSON.stringify({ sent: sentCount, cleaned: toDelete.length }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
   } catch (err) {
-    return new Response(JSON.stringify({ error: err.message }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ error: (err as Error).message }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
   }
 });

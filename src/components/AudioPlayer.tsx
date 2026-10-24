@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { useEffect, useRef, useState, useMemo } from 'react';
+import { motion } from 'framer-motion';
 import { Play, Pause, Lock } from 'lucide-react';
 import { downloadAndDecryptAudio } from '@/lib/media';
 
@@ -9,9 +9,10 @@ interface AudioPlayerProps {
   durationSeconds: number | null;
   isScrambled: boolean;
   onDecode: () => void;
+  onPlay?: () => void;
 }
 
-export function AudioPlayer({ storagePath, roomCode, durationSeconds, isScrambled, onDecode }: AudioPlayerProps) {
+export function AudioPlayer({ storagePath, roomCode, durationSeconds, isScrambled, onDecode, onPlay }: AudioPlayerProps) {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -26,7 +27,6 @@ export function AudioPlayer({ storagePath, roomCode, durationSeconds, isScramble
     return () => {
       if (audioUrl) URL.revokeObjectURL(audioUrl);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioUrl]);
 
   const handleDecode = async () => {
@@ -60,7 +60,7 @@ export function AudioPlayer({ storagePath, roomCode, durationSeconds, isScramble
         setProgress(0);
         setCurrentTime(0);
       };
-      audio.play().then(() => setPlaying(true)).catch(() => setError('FALHA AO REPRODUZIR ÁUDIO'));
+      audio.play().then(() => { setPlaying(true); onPlay?.(); }).catch(() => setError('FALHA AO REPRODUZIR ÁUDIO'));
     } catch {
       setError('FALHA AO DECODIFICAR ÁUDIO');
     } finally {
@@ -75,7 +75,7 @@ export function AudioPlayer({ storagePath, roomCode, durationSeconds, isScramble
       audio.pause();
       setPlaying(false);
     } else {
-      audio.play().then(() => setPlaying(true)).catch(() => {});
+      audio.play().then(() => { setPlaying(true); onPlay?.(); }).catch(() => {});
     }
   };
 
@@ -85,29 +85,22 @@ export function AudioPlayer({ storagePath, roomCode, durationSeconds, isScramble
     return `${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
   };
 
-  const waveformBars = Array.from({ length: 32 }, (_, i) => {
-    const h = isScrambled ? Math.random() * 20 + 4 : Math.sin(i * 0.4) * 12 + 16;
-    return h;
-  });
+  const waveformBars = useMemo(() => {
+    return Array.from({ length: 32 }, (_, i) => {
+      return isScrambled ? Math.random() * 20 + 4 : Math.sin(i * 0.4) * 12 + 16;
+    });
+  }, [isScrambled]);
 
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      {error && (
-        <span className="font-mono text-[10px] text-cyber-red">{error}</span>
-      )}
+      {error && <span className="font-mono text-[10px] text-cyber-red">{error}</span>}
       <div className="flex items-center gap-3">
         <button
           onClick={handleDecode}
           disabled={loading}
           className="shrink-0 text-cyber-green transition-colors hover:text-cyber-green-dim disabled:opacity-50"
         >
-          {isScrambled ? (
-            <Lock size={20} className="text-cyber-amber" />
-          ) : playing ? (
-            <Pause size={20} />
-          ) : (
-            <Play size={20} />
-          )}
+          {isScrambled ? <Lock size={20} className="text-cyber-amber" /> : playing ? <Pause size={20} /> : <Play size={20} />}
         </button>
 
         <div className="flex h-8 flex-1 items-center gap-0.5 overflow-hidden">
@@ -129,10 +122,7 @@ export function AudioPlayer({ storagePath, roomCode, durationSeconds, isScramble
           {isScrambled ? '?? : ??' : `${formatTime(currentTime)} / ${formatTime(duration)}`}
         </span>
       </div>
-
-      {loading && (
-        <span className="font-mono text-[10px] text-cyber-cyan/60">DECODIFICANDO...</span>
-      )}
+      {loading && <span className="font-mono text-[10px] text-cyber-cyan/60">DECODIFICANDO...</span>}
     </div>
   );
 }

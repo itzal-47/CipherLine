@@ -1,20 +1,38 @@
 import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X } from 'lucide-react';
-import { getImageUrl } from '@/lib/media';
+import { downloadAndDecryptImage } from '@/lib/media';
 
 interface ImageViewerProps {
   storagePath: string;
+  roomCode: string;
   onClose: () => void;
 }
 
-export function ImageViewer({ storagePath, onClose }: ImageViewerProps) {
+export function ImageViewer({ storagePath, roomCode, onClose }: ImageViewerProps) {
   const [url, setUrl] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    getImageUrl(storagePath).then(setUrl).catch(() => {});
-  }, [storagePath]);
+    let revokeUrl: string | null = null;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const blob = await downloadAndDecryptImage(storagePath, roomCode);
+        if (cancelled) return;
+        revokeUrl = URL.createObjectURL(blob);
+        setUrl(revokeUrl);
+      } catch {
+        // falha silenciosa — o fallback visual mostra "CARREGANDO..." eterno
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (revokeUrl) URL.revokeObjectURL(revokeUrl);
+    };
+  }, [storagePath, roomCode]);
 
   return (
     <AnimatePresence>

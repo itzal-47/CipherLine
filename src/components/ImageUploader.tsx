@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { X, Send, Image as ImageIcon, AlertCircle } from 'lucide-react';
 import { compressImage } from '@/lib/media';
 
@@ -19,7 +19,6 @@ export function ImageUploader({ onSend, onCancel }: ImageUploaderProps) {
     return () => {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewUrl]);
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {

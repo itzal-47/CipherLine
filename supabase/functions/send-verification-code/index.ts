@@ -12,6 +12,17 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
+    // ============================================================
+    // AUTENTICAÇÃO — só utilizadores autenticados podem pedir código.
+    // ============================================================
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) {
+      return new Response(
+        JSON.stringify({ error: "Missing authorization" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
     const { email } = await req.json();
 
     if (!email || typeof email !== "string") {
@@ -23,14 +34,56 @@ Deno.serve(async (req: Request) => {
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+
+    // Identifica QUEM está a chamar, a partir do JWT — nunca confiamos
+    // no email do corpo como prova de identidade.
+    const callerClient = createClient(supabaseUrl, anonKey, {
+      global: { headers: { Authorization: authHeader } },
+    });
+    const { data: { user }, error: userErr } = await callerClient.auth.getUser();
+    if (userErr || !user) {
+      return new Response(
+        JSON.stringify({ error: "Invalid session" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    // Só pode pedir código para o PRÓPRIO email — impede uso da tua
+    // infraestrutura como canal de spam para terceiros.
+    const normalizedEmail = email.trim().toLowerCase();
+    const callerEmail = (user.email || "").trim().toLowerCase();
+    if (normalizedEmail !== callerEmail) {
+      return new Response(
+        JSON.stringify({ error: "Só é possível enviar código para o próprio email" }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
 
     const supabase = createClient(supabaseUrl, serviceRoleKey, {
       auth: { autoRefreshToken: false, persistSession: false },
     });
 
-    // Generate a 6-digit code via the RPC function
+    // Rate limit simples: no máximo 3 códigos por email em 10 minutos.
+    // Evita spam mesmo por parte do próprio utilizador (cliques repetidos,
+    // bots, etc.).
+    const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const { count, error: countErr } = await supabase
+      .from("email_verification_codes")
+      .select("id", { count: "exact", head: true })
+      .eq("email", normalizedEmail)
+      .gte("created_at", tenMinAgo);
+
+    if (!countErr && (count ?? 0) >= 3) {
+      return new Response(
+        JSON.stringify({ error: "Muitas tentativas. Aguarde alguns minutos." }),
+        { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    // Gera o código via RPC (service_role, autorizado)
     const { data: code, error: rpcError } = await supabase
-      .rpc("generate_verification_code", { p_email: email });
+      .rpc("generate_verification_code", { p_email: normalizedEmail });
 
     if (rpcError || !code) {
       return new Response(
@@ -39,8 +92,6 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // Send the code via Resend (HTTP API — works on Supabase Edge Functions,
-    // unlike raw SMTP which is blocked on ports 25/465/587)
     const resendApiKey = Deno.env.get("RESEND_API_KEY");
     if (!resendApiKey) {
       return new Response(
@@ -57,7 +108,7 @@ Deno.serve(async (req: Request) => {
       },
       body: JSON.stringify({
         from: "CipherLine <onboarding@resend.dev>",
-        to: [email],
+        to: [normalizedEmail],
         subject: "Código de Verificação — CipherLine",
         html: `
           <div style="font-family: monospace; background: #0a0e0a; color: #00ff41; padding: 40px; text-align: center;">
@@ -86,9 +137,8 @@ Deno.serve(async (req: Request) => {
     );
   } catch (err) {
     return new Response(
-      JSON.stringify({ error: err.message }),
+      JSON.stringify({ error: (err as Error).message }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }
 });
-

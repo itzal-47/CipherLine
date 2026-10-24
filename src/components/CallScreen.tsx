@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Phone, PhoneOff, Mic, MicOff, Video, VideoOff, Camera, CameraOff, AlertTriangle, X } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { Phone, PhoneOff, Mic, MicOff, Camera, CameraOff, AlertTriangle, X } from 'lucide-react';
 import {
   createPeerConnection,
   sendOnChannel,
   subscribeSignaling,
   getUserMediaStream,
-  adaptBitrate,
   type CallState,
   type SignalingMessage,
 } from '@/lib/webrtc';
@@ -24,6 +23,8 @@ interface CallScreenProps {
 }
 
 const CALL_TIMEOUT_MS = 30000;
+const ICE_RESTART_MAX_ATTEMPTS = 3;
+const CONNECT_WARN_MS = 20000;
 
 export function CallScreen({
   roomId,
@@ -34,13 +35,16 @@ export function CallScreen({
   isInitiator,
   onEnd,
 }: CallScreenProps) {
-  const [callState, setCallState] = useState<CallState>(isInitiator ? 'calling' : 'ringing');
+  // Both sides start in 'calling'. The callee does not need 'ringing' because
+  // the incoming-call modal is handled by ChatScreen before this component mounts.
+  const [callState, setCallState] = useState<CallState>('calling');
   const [muted, setMuted] = useState(false);
   const [videoOff, setVideoOff] = useState(false);
   const videoOffRef = useRef(videoOff);
   useEffect(() => {
     videoOffRef.current = videoOff;
   }, [videoOff]);
+
   const [duration, setDuration] = useState(0);
   const [error, setError] = useState('');
   const [audioLevel, setAudioLevel] = useState(0);
@@ -51,10 +55,10 @@ export function CallScreen({
   const lastPacketsLostRef = useRef(0);
   const lastPacketsReceivedRef = useRef(0);
 
-  // Mantém o valor mais recente de callState acessível dentro de callbacks
-  // "congelados" (como o setTimeout de 30s abaixo), que de outra forma só
-  // enxergariam o valor do momento em que foram criados — causando o bug de
-  // a chamada cair sozinha aos 30s mesmo já atendida e em andamento.
+  // callStateRef keeps the most recent callState readable inside callbacks
+  // that were created earlier (e.g. the 30s timeout). Without this, the
+  // timeout sees the value from mount time and fires even after the call
+  // was already answered.
   const callStateRef = useRef(callState);
   useEffect(() => {
     callStateRef.current = callState;
@@ -74,6 +78,12 @@ export function CallScreen({
   const iceRestartAttemptsRef = useRef(0);
   const disconnectGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // ICE candidates that arrived before setRemoteDescription. Buffered here
+  // and drained right after setRemoteDescription succeeds. Without this,
+  // candidates on slow networks are silently lost and the call fails.
+  const pendingIceCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const remoteDescriptionSetRef = useRef(false);
+
   const cleanup = useCallback(() => {
     if (pcRef.current) {
       pcRef.current.close();
@@ -83,23 +93,32 @@ export function CallScreen({
       localStreamRef.current.getTracks().forEach((t) => t.stop());
       localStreamRef.current = null;
     }
-    if (timerRef.current) clearInterval(timerRef.current);
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    if (statsIntervalRef.current) clearInterval(statsIntervalRef.current);
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+    if (statsIntervalRef.current) {
+      clearInterval(statsIntervalRef.current);
+      statsIntervalRef.current = null;
+    }
     if (disconnectGraceTimerRef.current) {
       clearTimeout(disconnectGraceTimerRef.current);
       disconnectGraceTimerRef.current = null;
     }
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
     if (audioContextRef.current) {
       audioContextRef.current.close();
       audioContextRef.current = null;
     }
-    supabaseUnsub();
-  }, []);
-
-  const supabaseUnsub = useCallback(() => {
-    // channel unsubscribe handled by caller
+    pendingIceCandidatesRef.current = [];
+    remoteDescriptionSetRef.current = false;
   }, []);
 
   const formatDuration = (s: number) => {
@@ -135,9 +154,23 @@ export function CallScreen({
     onEnd();
   }, [myId, peerId, cleanup, onEnd]);
 
-  // Main WebRTC setup
   useEffect(() => {
-    let unsub: any = null;
+    let unsub: ReturnType<typeof subscribeSignaling> | null = null;
+
+    const applyRemoteDescription = async (pc: RTCPeerConnection, desc: RTCSessionDescriptionInit) => {
+      await pc.setRemoteDescription(desc);
+      remoteDescriptionSetRef.current = true;
+      // Drain candidates that arrived while we were still setting up
+      const queued = pendingIceCandidatesRef.current;
+      pendingIceCandidatesRef.current = [];
+      for (const c of queued) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(c));
+        } catch {
+          // candidate late or invalid, ignore
+        }
+      }
+    };
 
     const init = async () => {
       try {
@@ -153,8 +186,6 @@ export function CallScreen({
         const pc = createPeerConnection();
         pcRef.current = pc;
 
-        // Monitora qualidade da ligação a cada ~3s (perda de pacotes) para
-        // alimentar o indicador visual e a sugestão de modo de emergência.
         statsIntervalRef.current = setInterval(async () => {
           if (!pcRef.current) return;
           try {
@@ -190,7 +221,7 @@ export function CallScreen({
               }
             }
           } catch {
-            // getStats indisponível — sem indicador, sem problema
+            // getStats unavailable, no indicator, no problem
           }
         }, 3000);
 
@@ -209,17 +240,15 @@ export function CallScreen({
         };
 
         pc.onicecandidate = (e) => {
-          if (e.candidate) {
-            if (signalChannelRef.current) sendOnChannel(signalChannelRef.current, myId, peerId, 'ice', e.candidate.toJSON()).catch(() => {});
+          if (e.candidate && signalChannelRef.current) {
+            sendOnChannel(signalChannelRef.current, myId, peerId, 'ice', e.candidate.toJSON()).catch(() => {});
           }
         };
 
-        const MAX_ICE_RESTART_ATTEMPTS = 3;
-
         const attemptIceRestart = async () => {
-          if (iceRestartAttemptsRef.current >= MAX_ICE_RESTART_ATTEMPTS) {
+          if (iceRestartAttemptsRef.current >= ICE_RESTART_MAX_ATTEMPTS) {
             setCallState('failed');
-            setError('REDE INSTÁVEL — CHAMADA ENCERRADA');
+            setError('REDE INSTAVEL - CHAMADA ENCERRADA');
             setTimeout(() => onEnd('failed'), 2000);
             return;
           }
@@ -234,7 +263,7 @@ export function CallScreen({
               }
             }
           } catch {
-            // tenta de novo no próximo ciclo de disconnected/failed
+            // try again on the next disconnected/failed cycle
           }
         };
 
@@ -247,16 +276,16 @@ export function CallScreen({
             }
             setCallState('connected');
             setError('');
-            if (timeoutRef.current) clearTimeout(timeoutRef.current);
+            if (timeoutRef.current) {
+              clearTimeout(timeoutRef.current);
+              timeoutRef.current = null;
+            }
             if (!timerRef.current) {
               timerRef.current = setInterval(() => setDuration((d) => d + 1), 1000);
             }
           } else if (pc.connectionState === 'disconnected') {
-            // 'disconnected' é frequentemente transitório (troca de rede,
-            // instabilidade momentânea) — dá uma folga curta pra ver se o
-            // ICE se recupera sozinho antes de intervir.
             setCallState('reconnecting');
-            setError('CONEXÃO INSTÁVEL — RECONECTANDO...');
+            setError('CONEXAO INSTAVEL - RECONECTANDO...');
             if (!disconnectGraceTimerRef.current) {
               disconnectGraceTimerRef.current = setTimeout(() => {
                 disconnectGraceTimerRef.current = null;
@@ -267,28 +296,39 @@ export function CallScreen({
             }
           } else if (pc.connectionState === 'failed') {
             setCallState('reconnecting');
-            setError('CONEXÃO INSTÁVEL — RECONECTANDO...');
+            setError('CONEXAO INSTAVEL - RECONECTANDO...');
             attemptIceRestart();
           }
         };
 
-        // Signaling
+        // Signaling handler
         unsub = subscribeSignaling(roomId, myId, async (msg: SignalingMessage) => {
           if (msg.from !== peerId) return;
 
           switch (msg.type) {
-            case 'call-accept':
-              setCallState('connected');
-              // 'connected' aqui só significa que o outro lado atendeu — a
-              // conexão de mídia (WebRTC) pode ainda demorar ou falhar em
-              // redes difíceis. Se não estabelecer de verdade em 20s, avisa
-              // em vez de deixar a tela presa em "conectado" sem áudio/vídeo.
-              setTimeout(() => {
-                if (pcRef.current && pcRef.current.connectionState !== 'connected') {
-                  setError('CONEXÃO INSTÁVEL — TENTANDO RESTABELECER');
+            case 'call-accept': {
+              // Only the caller reacts to this. The callee never receives
+              // its own call-accept (sendOnChannel targets peerId).
+              if (!isInitiator) break;
+              // Callee answered: NOW we create and send the offer.
+              try {
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                if (signalChannelRef.current) {
+                  await sendOnChannel(signalChannelRef.current, myId, peerId, 'offer', offer);
                 }
-              }, 20000);
+              } catch {
+                setError('FALHA AO NEGOCIAR CONEXAO');
+              }
+              // Do NOT mark 'connected' yet. Wait for the WebRTC connection
+              // state to actually reach 'connected'. Warn if too slow.
+              setTimeout(() => {
+                if (pcRef.current && pcRef.current.connectionState !== 'connected' && callStateRef.current === 'calling') {
+                  setError('CONEXAO INSTAVEL - TENTANDO RESTABELECER');
+                }
+              }, CONNECT_WARN_MS);
               break;
+            }
             case 'call-decline':
               setCallState('declined');
               cleanup();
@@ -299,37 +339,52 @@ export function CallScreen({
               cleanup();
               setTimeout(() => onEnd(), 1500);
               break;
-            case 'offer':
-              if (!isInitiator) {
-                setCallState('connected');
-                await pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
+            case 'offer': {
+              if (isInitiator) break;
+              try {
+                await applyRemoteDescription(pc, msg.payload);
                 const answer = await pc.createAnswer();
                 await pc.setLocalDescription(answer);
-                if (signalChannelRef.current) sendOnChannel(signalChannelRef.current, myId, peerId, 'answer', answer).catch(() => {});
+                if (signalChannelRef.current) {
+                  await sendOnChannel(signalChannelRef.current, myId, peerId, 'answer', answer);
+                }
+              } catch {
+                setError('FALHA AO NEGOCIAR CONEXAO');
               }
               break;
-            case 'answer':
-              if (isInitiator) {
-                await pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
+            }
+            case 'answer': {
+              if (!isInitiator) break;
+              try {
+                await applyRemoteDescription(pc, msg.payload);
+              } catch {
+                setError('FALHA AO ESTABELECER CONEXAO');
               }
               break;
-            case 'ice':
+            }
+            case 'ice': {
+              if (!remoteDescriptionSetRef.current) {
+                pendingIceCandidatesRef.current.push(msg.payload);
+                break;
+              }
               try {
                 await pc.addIceCandidate(new RTCIceCandidate(msg.payload));
               } catch {
-                // ignore late ICE candidates
+                // late ICE candidate, ignore
               }
               break;
+            }
           }
         });
         signalChannelRef.current = unsub;
 
         if (isInitiator) {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          if (signalChannelRef.current) sendOnChannel(signalChannelRef.current, myId, peerId, 'offer', offer).catch(() => {});
-          if (signalChannelRef.current) sendOnChannel(signalChannelRef.current, myId, peerId, 'call-start', { withVideo }).catch(() => {});
-
+          // Caller: announce the call. Do NOT send an offer yet - wait for
+          // call-accept. This prevents the offer being lost while the
+          // callee has not even mounted its CallScreen.
+          if (signalChannelRef.current) {
+            sendOnChannel(signalChannelRef.current, myId, peerId, 'call-start', { withVideo }).catch(() => {});
+          }
           timeoutRef.current = setTimeout(() => {
             if (callStateRef.current === 'calling') {
               setCallState('no-answer');
@@ -337,10 +392,18 @@ export function CallScreen({
               setTimeout(() => onEnd(), 1500);
             }
           }, CALL_TIMEOUT_MS);
+        } else {
+          // Callee: the fact that this component is mounting means the user
+          // already accepted (ChatScreen only mounts CallScreen after that).
+          // Signal acceptance so the caller can send the offer.
+          if (signalChannelRef.current) {
+            sendOnChannel(signalChannelRef.current, myId, peerId, 'call-accept', {}).catch(() => {});
+          }
         }
-      } catch (err: any) {
-        if (err?.name === 'NotAllowedError') {
-          setError('ACESSO AO MICROFONE/CÂMERA NEGADO — VERIFIQUE AS PERMISSÕES DO NAVEGADOR');
+      } catch (err: unknown) {
+        const name = (err as Error)?.name;
+        if (name === 'NotAllowedError') {
+          setError('ACESSO AO MICROFONE/CAMERA NEGADO - VERIFIQUE AS PERMISSOES');
         } else {
           setError('FALHA AO INICIAR CHAMADA');
         }
@@ -380,7 +443,7 @@ export function CallScreen({
     ended: 'CHAMADA ENCERRADA',
     declined: 'CHAMADA RECUSADA',
     'no-answer': 'SEM RESPOSTA',
-    failed: 'FALHA NA CONEXÃO',
+    failed: 'FALHA NA CONEXAO',
   };
 
   return (
@@ -390,7 +453,6 @@ export function CallScreen({
       exit={{ opacity: 0 }}
       className="absolute inset-0 z-[70] flex flex-col items-center justify-center bg-cyber-bg"
     >
-      {/* Remote video (full screen) */}
       {withVideo && (
         <video
           ref={remoteVideoRef}
@@ -401,9 +463,7 @@ export function CallScreen({
         />
       )}
 
-      {/* HUD overlay */}
       <div className="relative z-10 flex flex-col items-center gap-6">
-        {/* Peer info */}
         <div className="text-center">
           <div className="mb-2 flex items-center justify-center gap-2">
             <motion.div
@@ -425,8 +485,7 @@ export function CallScreen({
               {callQuality && (
                 <span className="flex items-end gap-0.5" title={`Qualidade: ${callQuality}`}>
                   {[1, 2, 3].map((bar) => {
-                    const active =
-                      callQuality === 'good' ? 3 : callQuality === 'fair' ? 2 : 1;
+                    const active = callQuality === 'good' ? 3 : callQuality === 'fair' ? 2 : 1;
                     const color =
                       callQuality === 'good'
                         ? 'bg-cyber-green'
@@ -453,7 +512,7 @@ export function CallScreen({
             animate={{ opacity: 1, y: 0 }}
             className="flex items-center gap-3 border border-cyber-amber/40 bg-cyber-amber/10 px-4 py-2 font-mono text-xs text-cyber-amber"
           >
-            <span>REDE FRACA — DESLIGAR VÍDEO MELHORA A LIGAÇÃO?</span>
+            <span>REDE FRACA - DESLIGAR VIDEO MELHORA A LIGACAO?</span>
             <button
               onClick={() => {
                 toggleVideo();
@@ -472,7 +531,6 @@ export function CallScreen({
           </motion.div>
         )}
 
-        {/* Audio level indicator */}
         {(callState === 'connected' || callState === 'reconnecting') && !withVideo && (
           <div className="flex h-16 items-end gap-1">
             {Array.from({ length: 20 }).map((_, i) => (
@@ -486,7 +544,6 @@ export function CallScreen({
           </div>
         )}
 
-        {/* Error */}
         {error && (
           <div className="flex items-center gap-2 font-mono text-xs text-cyber-red glow-red">
             <AlertTriangle size={14} />
@@ -494,7 +551,6 @@ export function CallScreen({
           </div>
         )}
 
-        {/* Local video preview (small) */}
         {withVideo && (
           <div className="absolute bottom-32 right-4 h-32 w-24 overflow-hidden clip-hud-sm border border-cyber-green/30">
             <video
@@ -507,7 +563,6 @@ export function CallScreen({
           </div>
         )}
 
-        {/* Controls */}
         <div className="flex gap-4">
           <motion.button
             whileHover={{ scale: 1.1 }}

@@ -38,9 +38,20 @@ export async function subscribeToPush(participantId: string): Promise<void> {
     }
   }
 
+  const subJson = subscription.toJSON();
+
+  // Remove subscricoes antigas do mesmo dispositivo/endpoint para este participante
+  // para nao gerar notificacoes duplicadas.
+  await supabase
+    .from('push_subscriptions')
+    .delete()
+    .eq('participant_id', participantId)
+    .filter('subscription->>endpoint', 'eq', subJson.endpoint);
+
+  // Insere a nova subscricao
   await supabase.from('push_subscriptions').insert({
     participant_id: participantId,
-    subscription: subscription.toJSON() as any,
+    subscription: subJson as any,
   });
 }
 

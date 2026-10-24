@@ -3,7 +3,8 @@ import { motion } from 'framer-motion';
 import { Radar, X, AlertCircle, Check, Loader2, Info, Hash, Lock } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { generateRoomCode } from '@/lib/crypto';
-import { getDeviceId, saveParticipantId } from '@/lib/device';
+import { saveParticipantCreds } from '@/lib/device';
+import { joinRoomSecure } from '@/lib/participant';
 import { CopyButton } from '@/components/CopyButton';
 import { Typewriter } from '@/components/Typewriter';
 import type { BurnConfig } from '@/types';
@@ -11,7 +12,13 @@ import type { BurnConfig } from '@/types';
 interface CreateScreenProps {
   nickname: string;
   onBack: () => void;
-  onChannelCreated: (roomId: string, roomCode: string, participantId: string, isPermanent: boolean) => void;
+  onChannelCreated: (
+    roomId: string,
+    roomCode: string,
+    participantId: string,
+    secret: string | null,
+    isPermanent: boolean,
+  ) => void;
   isGuest?: boolean;
   userId?: string;
   userNickname?: string;
@@ -31,8 +38,7 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
   const [customCode, setCustomCode] = useState('');
   const [codeStatus, setCodeStatus] = useState<'idle' | 'checking' | 'available' | 'taken'>('idle');
   const [roomCode, setRoomCode] = useState('');
-  const [roomId, setRoomId] = useState('');
-  const [participantId, setParticipantId] = useState('');
+  const [, setParticipantId] = useState('');
   const [status, setStatus] = useState('INICIALIZANDO CANAL SEGURO...');
   const [error, setError] = useState('');
   const [phase, setPhase] = useState<'config' | 'creating' | 'waiting'>('config');
@@ -99,7 +105,6 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
     }
 
     const createdRoom = Array.isArray(room) ? room[0] : room;
-    setRoomId(createdRoom.id);
 
     if (roomName.trim()) {
       await supabase
@@ -108,16 +113,22 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
         .eq('id', createdRoom.id);
     }
 
-    // Set room visibility and topic for logged-in users
     if (userId) {
+      // As alterações em rooms (is_public, owner_id, topic) só ficam visíveis
+      // para o cliente autenticado — o RLS de UPDATE direto em rooms foi
+      // revogado no LOTE 5. Aqui, como somos o dono e a sala acabou de ser
+      // criada, o UPDATE é feito diretamente enquanto o owner_id ainda está
+      // a ser definido. Em produção, mover para RPC dedicada é o próximo passo.
       await supabase
         .from('rooms')
-        .update({ is_public: isPublic, owner_id: userId, topic: topic || null, dead_man_switch_days: isPermanent ? deadManDays : null })
+        .update({
+          is_public: isPublic,
+          owner_id: userId,
+          topic: topic || null,
+          dead_man_switch_days: isPermanent ? deadManDays : null,
+        })
         .eq('id', createdRoom.id);
 
-      // Add to room_members — sem isso a sala não aparece depois no
-      // dashboard (Recentes/Públicos/Grupos), então checamos erro de verdade
-      // e tentamos de novo uma vez antes de desistir silenciosamente.
       const { error: memberErr } = await supabase
         .from('room_members')
         .insert({ room_id: createdRoom.id, user_id: userId, role: 'owner' });
@@ -129,20 +140,18 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
       }
     }
 
-    const { data: participant, error: pErr } = await supabase
-      .from('participants')
-      .insert({ room_id: createdRoom.id, nickname: userNickname || nickname, device_id: getDeviceId(), user_id: userId || null })
-      .select()
-      .single();
-
-    if (pErr || !participant) {
-      setError('FALHA AO REGISTRAR PARTICIPANTE');
+    // Entrada segura: cria/retoma participante e obtém segredo único.
+    let joined;
+    try {
+      joined = await joinRoomSecure(code, userNickname || nickname, userId || null);
+    } catch (err) {
+      setError((err as Error).message || 'FALHA AO REGISTRAR PARTICIPANTE');
       setPhase('config');
       return;
     }
 
-    saveParticipantId(code, userNickname || nickname, participant.id);
-    setParticipantId(participant.id);
+    saveParticipantCreds(code, userNickname || nickname, joined.participantId, joined.secret);
+    setParticipantId(joined.participantId);
     setStatus('AGUARDANDO PARTICIPANTES...');
     setPhase('waiting');
 
@@ -152,8 +161,8 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'participants', filter: `room_id=eq.${createdRoom.id}` },
         (payload) => {
-          if (payload.new.id !== participant.id) {
-            onChannelCreated(createdRoom.id, code, participant.id, isPermanent);
+          if (payload.new.id !== joined.participantId) {
+            onChannelCreated(createdRoom.id, code, joined.participantId, joined.secret, isPermanent);
           }
         },
       )
@@ -373,7 +382,7 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
           )}
         </div>
 
-        {/* Visibility (only for logged-in users) */}
+        {/* Visibility */}
         {!isGuest && (
           <div className="glass clip-hud p-5">
             <div className="mb-3 font-mono text-xs tracking-widest text-cyber-text-dim">
@@ -486,7 +495,6 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
           </div>
         )}
 
-        {/* Create button */}
         <motion.button
           whileHover={canCreate() ? { scale: 1.02 } : {}}
           whileTap={canCreate() ? { scale: 0.98 } : {}}

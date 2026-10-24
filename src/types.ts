@@ -8,6 +8,9 @@ export interface UserProfile {
   theme_preference?: 'default' | 'overide' | null;
   display_name?: string | null;
   avatar_path?: string | null;
+  dashboard_bg_path?: string | null;
+  dashboard_bg_apply_to_chats?: boolean;
+  dashboard_bg_mode?: 'default' | 'clean';
 }
 
 export interface RoomMember {
@@ -83,7 +86,20 @@ export interface Participant {
   device_id: string | null;
 }
 
-export type MessageType = 'text' | 'audio' | 'image' | 'capsule';
+export type MessageType = 'text' | 'audio' | 'image' | 'capsule' | 'poll';
+
+// NOVO: Estrutura das Enquetes
+export interface PollOption {
+  id: string;
+  text: string;
+  votes: string[]; // Array de participant_ids
+}
+
+export interface PollData {
+  question: string;
+  options: PollOption[];
+  allowMultiple: boolean;
+}
 
 export interface MessageRow {
   id: string;
@@ -99,6 +115,11 @@ export interface MessageRow {
   duration_seconds: number | null;
   reply_to_message_id: string | null;
   capsule_unlock_at: string | null;
+  target_participant_id: string | null;
+  is_pinned: boolean;
+  // NOVOS CAMPOS
+  poll_data: PollData | null;
+  burn_after_listen: boolean;
 }
 
 export interface Reaction {
@@ -138,4 +159,50 @@ export interface DecodedMessage {
   capsuleUnlockAt: string | null;
   senderDisplayName: string | null;
   senderAvatarUrl: string | null;
+  targetParticipantId: string | null;
+  isPinned: boolean;
+  // NOVOS CAMPOS
+  pollData: PollData | null;
+  burnAfterListen: boolean;
+  fileName?: string | null;
+}
+export interface Friend {
+  id: string;
+  user_id: string;
+  friend_id: string;
+  status: 'pending' | 'accepted';
+  created_at: string;
+  profile?: UserProfile;
+}
+
+export interface StoryView {
+  id: string;
+  story_id: string;
+  viewer_id: string;
+  is_anonymous: boolean;
+  created_at: string;
+  profile?: UserProfile;
+}
+
+export interface Story {
+  id: string;
+  user_id: string;
+  content_encrypted: string | null;
+  media_path: string | null;
+  media_type: 'text' | 'image' | 'audio';
+  burn_trigger: 'none' | 'after_first_view' | 'after_reaction';
+  unlock_at: string;
+  created_at: string;
+  expires_at: string;
+  profile?: UserProfile;
+  views?: StoryView[];
+  is_viewed?: boolean;
+}
+
+export interface StoryGroup {
+  user_id: string;
+  profile: UserProfile;
+  stories: Story[];
+  has_unseen: boolean;
+  is_own: boolean;
 }

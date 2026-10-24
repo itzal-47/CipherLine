@@ -19,10 +19,20 @@ export default tseslint.config(
     },
     rules: {
       ...reactHooks.configs.recommended.rules,
-      'react-refresh/only-export-components': [
-        'warn',
-        { allowConstantExport: true },
-      ],
+      'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
+      
+      // Catch vazio e' propositado em muitos sitios (fallback silencioso)
+      'no-empty': ['error', { allowEmptyCatch: true }],
+      
+      // Variaveis prefixadas com _ sao intencionalmente nao usadas
+      '@typescript-eslint/no-unused-vars': ['error', {
+        argsIgnorePattern: '^_',
+        varsIgnorePattern: '^_',
+        caughtErrorsIgnorePattern: '^_',
+      }],
+      
+      // any e' necessario em pontos onde os tipos do Supabase sao dinamicos
+      '@typescript-eslint/no-explicit-any': 'warn',
     },
   }
 );

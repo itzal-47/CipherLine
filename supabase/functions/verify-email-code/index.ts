@@ -12,6 +12,17 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
+    // ============================================================
+    // AUTENTICAÇÃO
+    // ============================================================
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) {
+      return new Response(
+        JSON.stringify({ error: "Missing authorization" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
     const { email, code } = await req.json();
 
     if (!email || !code) {
@@ -23,14 +34,35 @@ Deno.serve(async (req: Request) => {
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+
+    const callerClient = createClient(supabaseUrl, anonKey, {
+      global: { headers: { Authorization: authHeader } },
+    });
+    const { data: { user }, error: userErr } = await callerClient.auth.getUser();
+    if (userErr || !user) {
+      return new Response(
+        JSON.stringify({ error: "Invalid session" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    // Só pode verificar o PRÓPRIO email.
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const callerEmail = (user.email || "").trim().toLowerCase();
+    if (normalizedEmail !== callerEmail) {
+      return new Response(
+        JSON.stringify({ error: "Só é possível verificar o próprio email" }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
 
     const supabase = createClient(supabaseUrl, serviceRoleKey, {
       auth: { autoRefreshToken: false, persistSession: false },
     });
 
-    // Validate the code via the RPC function
     const { data: verified, error: verifyError } = await supabase
-      .rpc("verify_email_code", { p_email: email, p_code: code });
+      .rpc("verify_email_code", { p_email: normalizedEmail, p_code: String(code) });
 
     if (verifyError) {
       return new Response(
@@ -52,7 +84,7 @@ Deno.serve(async (req: Request) => {
     );
   } catch (err) {
     return new Response(
-      JSON.stringify({ error: err.message }),
+      JSON.stringify({ error: (err as Error).message }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }
