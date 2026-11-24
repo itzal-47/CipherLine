@@ -624,18 +624,94 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
 
   const triggerEivorak = async (userMessage: string, repliedTo: DecodedMessage | null) => {
     try {
-      setEivorakThinking(true); const recentContext = messages.slice(-10).map((m) => `${m.senderNickname}: ${m.plaintext}`).join('\n'); const urlMatch = userMessage.match(/https?:\/\/[^\s]+/i); const cleanMessage = userMessage.replace(/@eivorak\b/i, '').trim() || userMessage; let imageUrl: string | null = null;
+      setEivorakThinking(true);
+      const recentContext = messages.slice(-10).map((m) => `${m.senderNickname}: ${m.plaintext}`).join('\n');
+      const urlMatch = userMessage.match(/https?:\/\/[^\s]+/i);
+      const cleanMessage = userMessage.replace(/@eivorak\b/i, '').trim() || userMessage;
+
+      const formData = new FormData();
+      formData.append('message', cleanMessage);
+      formData.append('recentContext', recentContext);
+      formData.append('isSystemRoom', String(isSystemRoom));
+      if (urlMatch) formData.append('linkUrl', urlMatch[0]);
+
       if (repliedTo?.messageType === 'image' && repliedTo.storagePath) {
-        try { const { downloadAndDecryptImage } = await import('@/lib/media'); const blob = await downloadAndDecryptImage(repliedTo.storagePath, roomCode); imageUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onloadend = () => resolve(reader.result as string); reader.onerror = reject; reader.readAsDataURL(blob); }); } catch { imageUrl = null; }
+        try {
+          const { downloadAndDecryptImage } = await import('@/lib/media');
+          const blob = await downloadAndDecryptImage(repliedTo.storagePath, roomCode);
+          const reader = new FileReader();
+          const imageUrlPromise = new Promise<string>((resolve, reject) => {
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+          formData.append('imageUrl', await imageUrlPromise);
+        } catch { /* falha silenciosa */ }
+      } else if (repliedTo?.messageType === 'audio' && repliedTo.storagePath) {
+        try {
+          const { downloadAndDecryptAudio } = await import('@/lib/media');
+          const audioBlob = await downloadAndDecryptAudio(repliedTo.storagePath, roomCode);
+          formData.append('audio', audioBlob, 'audio.webm');
+        } catch (err) {
+          console.warn('Falha ao decifrar audio para EiVORAK', err);
+        }
       }
-      const { data, error } = await supabase.functions.invoke('eivorak-agent', { body: { message: cleanMessage, recentContext, linkUrl: urlMatch ? urlMatch[0] : null, imageUrl, isSystemRoom } });
-      if (error || !data?.reply) { const detail = (data as any)?.error || error?.message; setSystemMessage(detail ? `EIVORAK: ${String(detail).slice(0, 80)}` : 'EIVORAK NÃO RESPONDEU — TENTE DE NOVO'); setTimeout(() => setSystemMessage(''), 6000); return; }
-      const encryptedReply = await encryptText(data.reply, roomCode); let replyMsg: any = null;
+
+      const { data, error } = await supabase.functions.invoke('eivorak-agent', { body: formData });
+
+      if (error) {
+        setSystemMessage('EIVORAK NÃO RESPONDEU — TENTE DE NOVO');
+        setTimeout(() => setSystemMessage(''), 4000);
+        return;
+      }
+
+      // NOVO: Verificar se o EiVORAK pediu para executar uma acao
+      if (data?.action) {
+        if (data.action === 'create_poll') {
+          const pollDataObj: PollData = {
+            question: data.args.question,
+            options: data.args.options.map((opt: string) => ({ id: crypto.randomUUID(), text: opt, votes: [] })),
+            allowMultiple: false
+          };
+          const encrypted = await encryptText(JSON.stringify(pollDataObj), roomCode);
+          const msg = await insertMessageSecure({ roomId, participantId, secret: participantSecret, encryptedContent: encrypted, messageType: 'poll', pollData: pollDataObj });
+          
+          if (msg) {
+            if (!focusMode) playSendSound();
+            setMessages((prev) => [...prev, {
+              id: msg.id, senderId: participantId, senderNickname: nickname, encryptedContent: encrypted, plaintext: '',
+              createdAt: msg.created_at, isOwn: true, state: 'decoded', destroyAt: null, burnConfig: null,
+              reactions: [], readBy: [], messageType: 'poll', storagePath: null, durationSeconds: null,
+              replyToMessageId: null, replyToSenderNickname: null, replyToPlaintext: null, capsuleUnlockAt: null,
+              senderDisplayName: null, senderAvatarUrl: null, targetParticipantId: null, isPinned: false,
+              pollData: pollDataObj, burnAfterListen: false, fileName: null
+            }]);
+            setSystemMessage('ENQUETE CRIADA PELO EIVORAK'); setTimeout(() => setSystemMessage(''), 3000);
+          }
+        } else if (data.action === 'pin_message' && repliedTo) {
+          try {
+            await togglePinMessageSecure(repliedTo.id, participantId, participantSecret);
+            setMessages(prev => prev.map(m => m.id === repliedTo.id ? { ...m, isPinned: true } : { ...m, isPinned: false }));
+            setSystemMessage('MENSAGEM FIXADA PELO EIVORAK'); setTimeout(() => setSystemMessage(''), 3000);
+          } catch { setSystemMessage('FALHA AO FIXAR MENSAGEM'); setTimeout(() => setSystemMessage(''), 3000); }
+        }
+        return;
+      }
+
+      // Resposta normal em texto
+      if (!data?.reply) {
+        setSystemMessage('EIVORAK NÃO RESPONDEU — TENTE DE NOVO');
+        setTimeout(() => setSystemMessage(''), 6000);
+        return;
+      }
+
+      const encryptedReply = await encryptText(data.reply, roomCode);
+      let replyMsg: any = null;
       try {
         const rpcRes = await insertEivorakReplySecure(roomId, participantId, participantSecret, encryptedReply);
-        replyMsg = Array.isArray(rpcRes) ? rpcRes[0] : rpcRes; // Corrige o problema do array
+        replyMsg = Array.isArray(rpcRes) ? rpcRes[0] : rpcRes;
       } catch { replyMsg = null; }
-      
+
       if (replyMsg && replyMsg.id) {
         setMessages((prev) => {
           if (prev.some((m) => m.id === replyMsg.id)) return prev;
@@ -838,7 +914,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
               ) : (
                 <motion.span animate={{ scale: [1, 1.15, 1] }} transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }} className="shrink-0"><Lock size={12} className="text-cyber-green glow-green" /></motion.span>
               )}
-              <span className="truncate font-mono text-sm font-bold tracking-widest text-cyber-green glow-green">{roomName || roomCode}</span>
+              <span className={`truncate font-mono text-sm font-bold tracking-widest ${isSystemRoom ? 'text-cyber-magenta glow-magenta' : 'text-cyber-green glow-green'}`}>{roomName || roomCode}</span>
               <CopyButton text={roomCode} label="COPIAR" />
               {roomName && <span className="shrink-0 font-mono text-[9px] tracking-widest text-cyber-text-faint">{roomCode}</span>}
               {connectionStatus !== 'connected' && (
@@ -967,10 +1043,10 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
         <div className="mx-auto max-w-2xl">
           <div className="glass clip-hud-sm flex items-center gap-2 px-4 py-3">
             <span className="font-mono text-cyber-green-dim">&gt;</span>
-            <input ref={inputRef} type="text" value={input} onChange={(e) => { setInput(e.target.value); broadcastTyping(); }} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} maxLength={500} placeholder="digite sua mensagem..." className="min-w-0 flex-1 bg-transparent font-mono text-sm text-cyber-green placeholder-cyber-text-faint focus:outline-none" />
+            <input ref={inputRef} type="text" value={input} onChange={(e) => { setInput(e.target.value); broadcastTyping(); }} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} maxLength={500} placeholder={isSystemRoom ? "fala com o EiVORAK..." : "digite sua mensagem..."} className={`min-w-0 flex-1 bg-transparent font-mono text-sm placeholder-cyber-text-faint focus:outline-none ${isSystemRoom ? 'text-cyber-magenta' : 'text-cyber-green'}`} />
             <div className="relative shrink-0">
               <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setShowEivorakMenu((v) => !v)} className="text-cyber-magenta transition-colors hover:text-cyber-magenta/70" title="EiVORAK"><Sparkles size={16} /></motion.button>
-              <AnimatePresence>{showEivorakMenu && (<motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }} className="absolute bottom-10 right-0 z-30 w-52 clip-hud-sm border border-cyber-magenta/30 bg-cyber-bg/95 p-1 backdrop-blur">{[{ label: 'RESUMIR CONVERSA', prompt: '@eivorak resume a conversa até aqui' }, { label: 'CONVIDAR PRO JOGO', prompt: '@eivorak vamos jogar ' }, { label: 'TRADUZIR', prompt: '@eivorak traduz: ' }, { label: 'TIRAR UMA DÚVIDA', prompt: '@eivorak ' }, { label: 'ANALISAR LINK', prompt: '@eivorak o que achas deste link: ' }].map((opt) => (<button key={opt.label} onClick={() => { setInput(opt.prompt); setShowEivorakMenu(false); inputRef.current?.focus(); }} className="block w-full px-3 py-2 text-left font-mono text-[10px] tracking-widest text-cyber-text-dim transition-colors hover:bg-cyber-magenta/10 hover:text-cyber-magenta">{opt.label}</button>))}</motion.div>)}</AnimatePresence>
+              <AnimatePresence>{showEivorakMenu && (<motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }} className="absolute bottom-10 right-0 z-30 w-52 clip-hud-sm border border-cyber-magenta/30 bg-cyber-bg/95 p-1 backdrop-blur">{[{ label: 'RESUMIR CONVERSA', prompt: '@eivorak resume a conversa até aqui' }, { label: 'CRIAR ENQUETE', prompt: '@eivorak cria uma enquete sobre: ' }, { label: 'FIXAR MENSAGEM', prompt: '@eivorak fixa esta mensagem' }, { label: 'TRADUZIR', prompt: '@eivorak traduz: ' }, { label: 'TIRAR UMA DÚVIDA', prompt: '@eivorak ' }, { label: 'ANALISAR LINK', prompt: '@eivorak o que achas deste link: ' }].map((opt) => (<button key={opt.label} onClick={() => { setInput(opt.prompt); setShowEivorakMenu(false); inputRef.current?.focus(); }} className="block w-full px-3 py-2 text-left font-mono text-[10px] tracking-widest text-cyber-text-dim transition-colors hover:bg-cyber-magenta/10 hover:text-cyber-magenta">{opt.label}</button>))}</motion.div>)}</AnimatePresence>
             </div>
             
             <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setShowPollCreator(true)} className="shrink-0 text-cyber-cyan transition-colors hover:text-cyber-cyan-dim" title="Criar Enquete"><BarChart2 size={16} /></motion.button>

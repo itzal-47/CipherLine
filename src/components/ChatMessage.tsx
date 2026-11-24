@@ -76,6 +76,7 @@ export function ChatMessage({ message, roomCode, participantId, isOwner, onDestr
   const isImage = message.messageType === 'image';
   const isCapsule = message.messageType === 'capsule';
   const isPoll = message.messageType === 'poll';
+  const isEivorak = message.senderNickname === 'EiVORAK';
 
   const isWhisper = !!message.targetParticipantId;
   const canReadWhisper = !isWhisper || message.isOwn || message.targetParticipantId === participantId;
@@ -277,7 +278,8 @@ export function ChatMessage({ message, roomCode, participantId, isOwner, onDestr
         {!message.isOwn && (
           <div className="mb-1 ml-1 flex items-center gap-1.5">
             {message.senderAvatarUrl && <img src={message.senderAvatarUrl} alt="" className="h-4 w-4 rounded-full object-cover" />}
-            <span className="break-all font-mono text-[10px] tracking-widest text-cyber-text-dim">{message.senderDisplayName || message.senderNickname}</span>
+            {isEivorak && <Sparkles size={12} className="text-cyber-magenta animate-pulse" />}
+            <span className={`break-all font-mono text-[10px] tracking-widest ${isEivorak ? 'text-cyber-magenta' : 'text-cyber-text-dim'}`}>{message.senderDisplayName || message.senderNickname}</span>
             {isWhisper && <span className="font-mono text-[9px] text-cyber-magenta ml-2 px-1 border border-cyber-magenta/30 rounded">SUSSURRO</span>}
             {message.burnAfterListen && !isWhisper && <span className="font-mono text-[9px] text-cyber-amber ml-2 px-1 border border-cyber-amber/30 rounded">OUVIR 1X</span>}
           </div>
@@ -290,7 +292,7 @@ export function ChatMessage({ message, roomCode, participantId, isOwner, onDestr
                 <button onClick={(e) => { e.stopPropagation(); onReply(message); setShowActions(false); }} className="flex items-center gap-2 px-3 py-1.5 font-mono text-[10px] tracking-widest text-cyber-cyan transition-colors hover:text-cyber-green">
                   <Reply size={12} /> RESPONDER
                 </button>
-                {!message.isOwn && (
+                {!message.isOwn && !isEivorak && (
                   <>
                     <button onClick={(e) => { e.stopPropagation(); onWhisper(message); setShowActions(false); }} className="flex items-center gap-2 px-3 py-1.5 font-mono text-[10px] tracking-widest text-cyber-magenta transition-colors hover:text-cyber-green">
                       <Sparkles size={12} /> SUSSURRAR
@@ -319,7 +321,7 @@ export function ChatMessage({ message, roomCode, participantId, isOwner, onDestr
             onContextMenu={(e) => { if (message.state === 'decoded' && message.isOwn) { e.preventDefault(); setShowActions(true); } }}
             onTouchStart={handleLongPressStart}
             onTouchEnd={handleLongPressEnd}
-            className={`clip-hud-sm relative min-w-0 overflow-hidden border px-4 py-3 cursor-pointer ${message.isOwn ? 'border-cyber-green/20 bg-cyber-green/5' : isWhisper ? 'border-cyber-magenta/30 bg-cyber-magenta/5' : isPoll ? 'border-cyber-cyan/40 bg-cyber-cyan/10' : 'border-cyber-cyan/20 bg-cyber-cyan/5'}`}
+            className={`clip-hud-sm relative min-w-0 overflow-hidden border px-4 py-3 cursor-pointer ${message.isOwn ? 'border-cyber-green/20 bg-cyber-green/5' : isEivorak ? 'border-cyber-magenta/50 bg-cyber-magenta/5 shadow-[0_0_15px_rgba(255,0,255,0.1)]' : isWhisper ? 'border-cyber-magenta/30 bg-cyber-magenta/5' : isPoll ? 'border-cyber-cyan/40 bg-cyber-cyan/10' : 'border-cyber-cyan/20 bg-cyber-cyan/5'}`}
           >
             {message.isPinned && <Pin size={12} className="absolute top-2 right-2 text-cyber-amber" />}
             {message.state === 'decoded' && message.replyToMessageId && message.replyToSenderNickname && (
