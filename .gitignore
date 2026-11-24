@@ -12,4 +12,7 @@ build/
 npm-debug.log*
 .vscode/
 .idea/
-node_modules/
+.DS_Store
+*.local
+dist-ssr/
+supabase/.temp/
