@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState, lazy, Suspense } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowDown, Send, AlertTriangle, Settings, Lock, Clock, X, Users, Smartphone, Monitor, Mic, Image as ImageIcon, Phone, Video, Reply, XCircle, WifiOff, Sparkles, FileText, Eye, EyeOff, Pin, MoreVertical, BarChart2, Brain, Camera, Hash } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { encryptText, decryptText } from '@/lib/crypto';
+import { encryptText } from '@/lib/crypto';
 import { playSendSound, playReceiveSound } from '@/lib/audio';
 import { getDeviceId, getHiddenMessageIds, hideMessageLocally } from '@/lib/device';
 import { requestNotificationPermission, subscribeToPush, unsubscribeFromPush } from '@/lib/push';
@@ -20,6 +20,9 @@ import { jsonToBurnConfig, createBurnConfig, type PollData } from '@/types';
 import type { DecodedMessage, Participant, Reaction, ReadReceipt, BurnConfig, MessageType } from '@/types';
 import { sendOnChannel, type SignalingMessage } from '@/lib/webrtc';
 import { hasPin, setPin, verifyPin } from '@/lib/pin';
+import { createRoomCrypto } from '@/lib/roomCrypto';
+import { DECRYPT_FAILED, NO_KEY } from '@/lib/cryptoV2';
+import { getRoomSecret } from '@/lib/roomKeys';
 
 const CallScreen = lazy(() => import('@/components/CallScreen').then(m => ({ default: m.CallScreen })));
 const GroupCallScreen = lazy(() => import('@/components/GroupCallScreen').then(m => ({ default: m.GroupCallScreen })));
@@ -27,6 +30,7 @@ const GroupCallScreen = lazy(() => import('@/components/GroupCallScreen').then(m
 interface ChatScreenProps {
   roomId: string; roomCode: string; participantId: string; participantSecret: string;
   nickname: string; isPermanent: boolean; onLeave: () => void; userId?: string;
+  cryptoVersion: 1 | 2;
   onSuppressScanlines?: (suppress: boolean) => void;
   onOpenPrivateReply?: (roomCode: string, roomId: string, quote: { text: string; sender: string; roomName: string }) => void;
   initialQuote?: { text: string; sender: string; roomName: string } | null;
@@ -44,7 +48,8 @@ const BURN_OPTIONS: { label: string; value: BurnConfig['mode'] }[] = [
 
 function vibrate(pattern: number | number[]) { if (typeof navigator !== 'undefined' && 'vibrate' in navigator) { try { navigator.vibrate(pattern); } catch {} } }
 
-export function ChatScreen({ roomId, roomCode, participantId, participantSecret, nickname, isPermanent, onLeave, userId, onSuppressScanlines, onOpenPrivateReply, initialQuote, onQuoteConsumed }: ChatScreenProps) {
+export function ChatScreen({ roomId, roomCode, participantId, participantSecret, nickname, isPermanent, cryptoVersion, onLeave, userId, onSuppressScanlines, onOpenPrivateReply, initialQuote, onQuoteConsumed }: ChatScreenProps) {
+  const rc = useMemo(() => createRoomCrypto({ roomCode, cryptoVersion, secret: cryptoVersion === 2 ? getRoomSecret(roomCode) : null }), [roomCode, cryptoVersion]);
   const [messages, setMessages] = useState<DecodedMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLocked, setIsLocked] = useState(() => localStorage.getItem(`cipherline_locked_${roomId}`) === 'true');
@@ -153,6 +158,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
   const deviceIdRef = useRef<string>(getDeviceId());
 
   useEffect(() => {
+    if (cryptoVersion === 2 && !rc.hasKey) return;
     loadInitialData(); loadBackground(); loadPaste();
     // Fetch das informações da sala (incluindo se é sala do EiVORAK e o avatar)
     supabase.from('rooms').select('name, is_public, owner_id, is_system_room, avatar_path').eq('id', roomId).maybeSingle().then(async ({ data }) => {
@@ -173,7 +179,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
     pasteChannelRef.current = supabase.channel(`paste-${roomId}`).on('postgres_changes', { event: '*', schema: 'public', table: 'room_pastes', filter: `room_id=eq.${roomId}` }, async (payload: any) => {
         if (pasteTextareaFocusedRef.current) return;
         const encrypted = payload.new?.encrypted_content;
-        if (encrypted) { const plain = await decryptText(encrypted, roomCode); if (plain !== '[DECRYPT_FAILED]') setPasteContent(plain); }
+        if (encrypted) { const plain = await rc.decryptText(encrypted, { messageId: roomId, type: 'paste' }); if (plain !== DECRYPT_FAILED && plain !== NO_KEY) setPasteContent(plain); }
       }).subscribe();
 
     setupRealtime(); setupPresence(); updateLastSeen();
@@ -209,10 +215,10 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
       chatChannelRef.current = null; presenceChannelRef.current = null; typingChannelRef.current = null; reactionChannelRef.current = null; receiptChannelRef.current = null; pasteChannelRef.current = null; webrtcChannelRef.current = null;
       unsubscribeFromPush(participantId).catch(() => {});
     };
-  }, [roomId, userId]);
+  }, [roomId, userId, cryptoVersion, rc]);
 
-  const loadPaste = async () => { const { data } = await supabase.from('room_pastes').select('encrypted_content').eq('room_id', roomId).maybeSingle(); if (data?.encrypted_content) { const plain = await decryptText(data.encrypted_content, roomCode); setPasteContent(plain === '[DECRYPT_FAILED]' ? '' : plain); } };
-  const savePaste = async (content: string) => { setPasteSaving(true); try { const encrypted = await encryptText(content, roomCode); await upsertPasteSecure(roomId, participantId, participantSecret, encrypted); } finally { setPasteSaving(false); } };
+  const loadPaste = async () => { const { data } = await supabase.from('room_pastes').select('encrypted_content').eq('room_id', roomId).maybeSingle(); if (data?.encrypted_content) { const plain = await rc.decryptText(data.encrypted_content, { messageId: roomId, type: 'paste' }); setPasteContent(plain === DECRYPT_FAILED || plain === NO_KEY ? '' : plain); } };
+  const savePaste = async (content: string) => { setPasteSaving(true); try { const encrypted = await rc.encryptText(content, { messageId: roomId, type: 'paste' }); await upsertPasteSecure(roomId, participantId, participantSecret, encrypted); } finally { setPasteSaving(false); } };
   const handlePasteChange = (value: string) => { setPasteContent(value); if (pasteSaveTimerRef.current) clearTimeout(pasteSaveTimerRef.current); pasteSaveTimerRef.current = setTimeout(() => savePaste(value), 800); };
 
   const handleUploadAvatar = async (blob: Blob) => {
@@ -353,7 +359,8 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
         const reversedMsgs = [...existingMsgs].reverse();
         const plaintextById = new Map<string, { plaintext: string; senderNickname: string }>();
         for (const msg of reversedMsgs) {
-          plaintextById.set(msg.id, { plaintext: await decryptText(msg.encrypted_content, roomCode), senderNickname: parts?.find((p) => p.id === msg.sender_id)?.nickname || 'UNKNOWN' });
+          const decrypted = await rc.decryptText(msg.encrypted_content, { messageId: msg.id, type: msg.message_type || 'text' });
+          plaintextById.set(msg.id, { plaintext: decrypted === NO_KEY ? DECRYPT_FAILED : decrypted, senderNickname: parts?.find((p) => p.id === msg.sender_id)?.nickname || 'UNKNOWN' });
         }
 
         const decoded = await Promise.all(reversedMsgs.map(async (msg) => {
@@ -405,7 +412,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
     const channel = supabase.channel(`chat-${roomId}`);
     channel.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `room_id=eq.${roomId}` }, async (payload) => {
         const msg = payload.new as any; if (msg.sender_id === participantId) return;
-        const plaintext = await decryptText(msg.encrypted_content, roomCode); const { data: sender } = await supabase.from('participants').select('nickname, show_profile, user_id').eq('id', msg.sender_id).maybeSingle();
+        const decrypted = await rc.decryptText(msg.encrypted_content, { messageId: msg.id, type: msg.message_type || 'text' }); const plaintext = decrypted === NO_KEY ? DECRYPT_FAILED : decrypted; const { data: sender } = await supabase.from('participants').select('nickname, show_profile, user_id').eq('id', msg.sender_id).maybeSingle();
         let senderDisplayName: string | null = null, senderAvatarUrl: string | null = null;
         if (sender?.show_profile && sender?.user_id) { const { data: pr } = await supabase.from('profiles').select('display_name, avatar_path').eq('id', sender.user_id).maybeSingle(); senderDisplayName = pr?.display_name || null; senderAvatarUrl = pr?.avatar_path ? await getImageUrl(pr.avatar_path) : null; }
         const msgBurn = msg.burn_config ? jsonToBurnConfig(msg.burn_config) : null;
@@ -522,12 +529,12 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
 
   const handleSend = async () => {
     setHasViewedChat(true);
-    const text = input.trim(); if (!text) return; maybeRequestPush(); const encrypted = await encryptText(text, roomCode); const burnJson = burnConfig.seconds > 0 ? JSON.parse(JSON.stringify(burnConfig)) : null; let msg: any;
+    const text = input.trim(); if (!text) return; maybeRequestPush(); const messageId = crypto.randomUUID(); const encrypted = await rc.encryptText(text, { messageId, type: 'text' }); const burnJson = burnConfig.seconds > 0 ? JSON.parse(JSON.stringify(burnConfig)) : null; let msg: any;
     try { 
       msg = await insertMessageSecure({ 
         roomId, participantId, secret: participantSecret, encryptedContent: encrypted, 
         burnConfig: burnJson, replyToMessageId: replyTo?.id || null,
-        targetParticipantId: whisperTo?.id || null 
+        targetParticipantId: whisperTo?.id || null, messageId
       }); 
     } catch { setSystemMessage('FALHA AO ENVIAR MENSAGEM'); return; }
     if (msg) {
@@ -630,9 +637,9 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
       }
       const { data, error } = await supabase.functions.invoke('eivorak-agent', { body: { message: cleanMessage, recentContext, linkUrl: urlMatch ? urlMatch[0] : null, imageUrl, isSystemRoom } });
       if (error || !data?.reply) { const detail = (data as any)?.error || error?.message; setSystemMessage(detail ? `EIVORAK: ${String(detail).slice(0, 80)}` : 'EIVORAK NÃO RESPONDEU — TENTE DE NOVO'); setTimeout(() => setSystemMessage(''), 6000); return; }
-      const encryptedReply = await encryptText(data.reply, roomCode); let replyMsg: any = null;
+      const messageId = crypto.randomUUID(); const encryptedReply = await rc.encryptText(data.reply, { messageId, type: 'text' }); let replyMsg: any = null;
       try {
-        const rpcRes = await insertEivorakReplySecure(roomId, participantId, participantSecret, encryptedReply);
+        const rpcRes = await insertEivorakReplySecure(roomId, participantId, participantSecret, encryptedReply, messageId);
         replyMsg = Array.isArray(rpcRes) ? rpcRes[0] : rpcRes; // Corrige o problema do array
       } catch { replyMsg = null; }
       
@@ -822,6 +829,15 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
   const getDeviceIcon = (p: Participant) => p.device_id === deviceIdRef.current ? (/Mobi|Android/i.test(navigator.userAgent) ? <Smartphone size={9} className="text-cyber-cyan/40" /> : <Monitor size={9} className="text-cyber-cyan/40" />) : null;
   const unreadCount = messages.filter(m => !m.isOwn && !m.readBy.some(r => r.participant_id === participantId)).length;
 
+  if (cryptoVersion === 2 && !rc.hasKey) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-6 px-6 text-center">
+        <p className="max-w-sm font-mono text-sm leading-relaxed text-cyber-text-dim">Falta a chave desta sala neste dispositivo. Pede um novo convite a quem criou a sala.</p>
+        <button onClick={onLeave} className="clip-hud-sm min-h-12 min-w-32 border border-cyber-cyan/30 bg-cyber-cyan/10 px-6 py-3 font-mono text-sm tracking-widest text-cyber-cyan transition-colors hover:bg-cyber-cyan/20">SAIR</button>
+      </div>
+    );
+  }
+
   return (
     <div className="relative flex h-full flex-col">
       {bgUrl && <ChatBackground imageUrl={bgUrl} mode={bgMode} pulseKey={pulseKey} />}
@@ -967,16 +983,16 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
         <div className="mx-auto max-w-2xl">
           <div className="glass clip-hud-sm flex items-center gap-2 px-4 py-3">
             <span className="font-mono text-cyber-green-dim">&gt;</span>
-            <input ref={inputRef} type="text" value={input} onChange={(e) => { setInput(e.target.value); broadcastTyping(); }} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} maxLength={500} placeholder="digite sua mensagem..." className="min-w-0 flex-1 bg-transparent font-mono text-sm text-cyber-green placeholder-cyber-text-faint focus:outline-none" />
+            <input ref={inputRef} type="text" name="message" aria-label="Mensagem" autoComplete="off" value={input} onChange={(e) => { setInput(e.target.value); broadcastTyping(); }} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} maxLength={500} placeholder="Escreve uma mensagem…" className="min-w-0 flex-1 bg-transparent font-mono text-sm text-cyber-green placeholder-cyber-text-faint focus:outline-none" />
             <div className="relative shrink-0">
               <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setShowEivorakMenu((v) => !v)} className="text-cyber-magenta transition-colors hover:text-cyber-magenta/70" title="EiVORAK"><Sparkles size={16} /></motion.button>
               <AnimatePresence>{showEivorakMenu && (<motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }} className="absolute bottom-10 right-0 z-30 w-52 clip-hud-sm border border-cyber-magenta/30 bg-cyber-bg/95 p-1 backdrop-blur">{[{ label: 'RESUMIR CONVERSA', prompt: '@eivorak resume a conversa até aqui' }, { label: 'CONVIDAR PRO JOGO', prompt: '@eivorak vamos jogar ' }, { label: 'TRADUZIR', prompt: '@eivorak traduz: ' }, { label: 'TIRAR UMA DÚVIDA', prompt: '@eivorak ' }, { label: 'ANALISAR LINK', prompt: '@eivorak o que achas deste link: ' }].map((opt) => (<button key={opt.label} onClick={() => { setInput(opt.prompt); setShowEivorakMenu(false); inputRef.current?.focus(); }} className="block w-full px-3 py-2 text-left font-mono text-[10px] tracking-widest text-cyber-text-dim transition-colors hover:bg-cyber-magenta/10 hover:text-cyber-magenta">{opt.label}</button>))}</motion.div>)}</AnimatePresence>
             </div>
             
-            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setShowPollCreator(true)} className="shrink-0 text-cyber-cyan transition-colors hover:text-cyber-cyan-dim" title="Criar Enquete"><BarChart2 size={16} /></motion.button>
-            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setShowImageUploader(true)} className="shrink-0 text-cyber-cyan transition-colors hover:text-cyber-cyan-dim" title="Enviar imagem"><ImageIcon size={16} /></motion.button>
-            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setShowCapsuleComposer(true)} className="shrink-0 text-cyber-amber transition-colors hover:text-cyber-amber/70" title="Cápsula do tempo"><Clock size={16} /></motion.button>
-            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setShowAudioRecorder(true)} className="shrink-0 text-cyber-cyan transition-colors hover:text-cyber-cyan-dim" title="Gravar áudio"><Mic size={16} /></motion.button>
+            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setShowPollCreator(true)} disabled={cryptoVersion === 2} aria-label={cryptoVersion === 2 ? 'Disponível em breve nesta sala' : 'Criar enquete'} className="flex h-11 w-11 shrink-0 items-center justify-center text-cyber-cyan transition-colors hover:text-cyber-cyan-dim disabled:opacity-40" title={cryptoVersion === 2 ? 'Disponível em breve nesta sala' : 'Criar Enquete'}><BarChart2 size={16} /></motion.button>
+            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setShowImageUploader(true)} disabled={cryptoVersion === 2} aria-label={cryptoVersion === 2 ? 'Disponível em breve nesta sala' : 'Enviar imagem'} className="flex h-11 w-11 shrink-0 items-center justify-center text-cyber-cyan transition-colors hover:text-cyber-cyan-dim disabled:opacity-40" title={cryptoVersion === 2 ? 'Disponível em breve nesta sala' : 'Enviar imagem'}><ImageIcon size={16} /></motion.button>
+            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setShowCapsuleComposer(true)} disabled={cryptoVersion === 2} aria-label={cryptoVersion === 2 ? 'Disponível em breve nesta sala' : 'Cápsula do tempo'} className="flex h-11 w-11 shrink-0 items-center justify-center text-cyber-amber transition-colors hover:text-cyber-amber/70 disabled:opacity-40" title={cryptoVersion === 2 ? 'Disponível em breve nesta sala' : 'Cápsula do tempo'}><Clock size={16} /></motion.button>
+            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setShowAudioRecorder(true)} disabled={cryptoVersion === 2} aria-label={cryptoVersion === 2 ? 'Disponível em breve nesta sala' : 'Gravar áudio'} className="flex h-11 w-11 shrink-0 items-center justify-center text-cyber-cyan transition-colors hover:text-cyber-cyan-dim disabled:opacity-40" title={cryptoVersion === 2 ? 'Disponível em breve nesta sala' : 'Gravar áudio'}><Mic size={16} /></motion.button>
             <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={handleSend} disabled={!input.trim()} className="shrink-0 text-cyber-green transition-colors hover:text-cyber-green-dim disabled:opacity-30"><Send size={16} /></motion.button>
           </div>
         </div>

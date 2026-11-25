@@ -7,6 +7,9 @@ import { clearCachedKey } from '@/lib/crypto';
 import { supabase } from '@/lib/supabase';
 import { joinRoomSecure, verifyParticipant } from '@/lib/participant';
 import { clearParticipantCreds } from '@/lib/device';
+import { forgetAllRoomSecrets, getRoomSecret } from '@/lib/roomKeys';
+import { parseInviteUrl } from '@/lib/cryptoV2';
+import { getJoinToken, panicWipeCrypto } from '@/lib/roomCrypto';
 import type { Screen, UserProfile } from '@/types';
 
 const ChatScreen = lazy(() => import('@/screens/ChatScreen').then((module) => ({ default: module.ChatScreen })));
@@ -36,6 +39,7 @@ interface ChatSession {
   participantId: string;
   secret: string | null;
   isPermanent: boolean;
+  cryptoVersion: 1 | 2;
 }
 
 const CHAT_SESSION_KEY = 'cipherline_chat_session';
@@ -49,7 +53,9 @@ function saveChatSession(session: ChatSession, nickname: string) {
 function loadChatSession(): (ChatSession & { nickname: string }) | null {
   try {
     const raw = localStorage.getItem(CHAT_SESSION_KEY);
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+    const saved = JSON.parse(raw);
+    return { ...saved, cryptoVersion: saved.cryptoVersion === 2 ? 2 : 1 };
   } catch {
     return null;
   }
@@ -77,6 +83,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [pendingQuote, setPendingQuote] = useState<{ text: string; sender: string; roomName: string } | null>(null);
   const [prefilledJoinCode, setPrefilledJoinCode] = useState('');
+  const [prefilledJoinSecret, setPrefilledJoinSecret] = useState<string | null>(null);
   const [theme, setThemeState] = useState<'default' | 'overide'>(
     () => (localStorage.getItem('cipherline_theme') as 'default' | 'overide') || 'default',
   );
@@ -89,12 +96,11 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const roomParam = params.get('room');
-    if (roomParam) {
-      setPrefilledJoinCode(roomParam.toUpperCase());
-      const cleanUrl = window.location.pathname;
-      window.history.replaceState({}, '', cleanUrl);
+    const invite = parseInviteUrl(window.location.search + window.location.hash);
+    if (invite.roomCode) {
+      setPrefilledJoinCode(invite.roomCode.toUpperCase());
+      setPrefilledJoinSecret(invite.secret);
+      window.history.replaceState({}, '', window.location.pathname);
     }
   }, []);
 
@@ -238,6 +244,7 @@ export default function App() {
         participantId: saved.participantId,
         secret,
         isPermanent: saved.isPermanent,
+        cryptoVersion: saved.cryptoVersion === 2 ? 2 : 1,
       },
       nickname: saved.nickname,
     };
@@ -269,8 +276,9 @@ export default function App() {
     participantId: string,
     secret: string | null,
     isPermanent: boolean,
+    cryptoVersion: 1 | 2 = 1,
   ) => {
-    setChatSession({ roomId, roomCode, participantId, secret, isPermanent });
+    setChatSession({ roomId, roomCode, participantId, secret, isPermanent, cryptoVersion });
     setScreen('chat');
   };
 
@@ -308,6 +316,7 @@ export default function App() {
     }
     clearChatSession();
     clearCachedKey();
+    forgetAllRoomSecrets();
     setChatSession(null);
     setNickname('');
     await supabase.auth.signOut();
@@ -322,24 +331,28 @@ export default function App() {
     setNickname(name);
 
     try {
-      const result = await joinRoomSecure(roomCode, name, profile?.id || null);
+      const roomSecret = getRoomSecret(roomCode);
+      const joinToken = roomSecret ? await getJoinToken(roomCode, roomSecret) : null;
+      const result = await joinRoomSecure(roomCode, name, profile?.id || null, joinToken);
       setChatSession({
         roomId: result.roomId,
         roomCode,
         participantId: result.participantId,
         secret: result.secret,
         isPermanent: result.isPermanent,
+        cryptoVersion: result.cryptoVersion,
       });
       setScreen('chat');
     } catch (err) {
-      console.error('Falha ao entrar na sala:', err);
       const msg = (err as Error)?.message || '';
       if (msg.toUpperCase().includes('EXPIRADA')) {
         // Se a sala expirou, leva o utilizador para o ecrã de sala expirada
         setExpiredCode(roomCode);
         setScreen('expired');
       } else {
-        setToastMessage('Não foi possível entrar nessa sala. Tenta novamente.');
+        setToastMessage(msg.includes('JOIN_TOKEN_INVALIDO')
+          ? 'Falta a chave desta sala neste dispositivo. Pede um novo convite.'
+          : 'Não foi possível entrar nessa sala. Tenta novamente.');
       }
     }
   };
@@ -361,10 +374,10 @@ export default function App() {
         participantId: result.participantId,
         secret: result.secret,
         isPermanent: result.isPermanent,
+        cryptoVersion: 1,
       });
       setScreen('chat');
     } catch (err) {
-      console.error('Falha ao abrir conversa privada:', err);
       const msg = (err as Error)?.message || '';
       setToastMessage(
         msg.toUpperCase().includes('SALA NÃO ENCONTRADA') || msg.includes('FALHA')
@@ -396,6 +409,7 @@ export default function App() {
         escPressesRef.current = [];
         setPanicFlash(true);
         clearCachedKey();
+        panicWipeCrypto();
         setChatSession(null);
         setNickname('');
         if (session) {
@@ -507,6 +521,7 @@ export default function App() {
               onExpired={handleExpired}
               userId={profile?.id}
               initialCode={prefilledJoinCode}
+              initialSecret={prefilledJoinSecret}
             />
           )}
 
@@ -526,6 +541,7 @@ export default function App() {
               participantSecret={chatSession.secret || ''}
               nickname={nickname}
               isPermanent={chatSession.isPermanent}
+              cryptoVersion={chatSession.cryptoVersion}
               onLeave={handleLeave}
               userId={profile?.id}
               onSuppressScanlines={setSuppressScanlines}

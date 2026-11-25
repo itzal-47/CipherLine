@@ -2,9 +2,12 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Search, Plus, LogOut, Hash, Lock, Archive, Pin, BellOff, MessageSquare, Settings as SettingsIcon, Trash2, Users, UserPlus, X, Check, Image as ImageIcon, Eye, EyeOff, Volume2, Sparkles, Mic, Square, ChevronLeft, ChevronRight, Zap, Copy } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { decryptText, encryptText } from '@/lib/crypto';
+import { encryptText } from '@/lib/crypto';
 import { getImageUrl } from '@/lib/media';
 import type { UserProfile, RoomMember, PublicRoom, Friend, Story, StoryView, StoryGroup } from '@/types';
+import { createRoomCrypto } from '@/lib/roomCrypto';
+import { DECRYPT_FAILED, NO_KEY } from '@/lib/cryptoV2';
+import { getRoomSecret } from '@/lib/roomKeys';
 
 interface DashboardScreenProps {
   profile: UserProfile;
@@ -158,7 +161,7 @@ export function DashboardScreen({ profile, onJoinRoom, onCreateChannel, onJoinBy
   };
 
   const loadMembership = async () => {
-    const { data } = await supabase.from('room_members').select(`*, rooms!inner(id, code, name, is_public, topic, is_permanent, owner_id, avatar_path, is_system_room)`).eq('user_id', profile.id);
+    const { data } = await supabase.from('room_members').select(`*, rooms!inner(id, code, name, is_public, topic, is_permanent, owner_id, avatar_path, is_system_room, crypto_version)`).eq('user_id', profile.id);
     if (data) {
       const active = (data as any[]).filter((r) => !r.is_archived);
       const archived = (data as any[]).filter((r) => r.is_archived);
@@ -327,7 +330,7 @@ export function DashboardScreen({ profile, onJoinRoom, onCreateChannel, onJoinBy
       let previewText = 'sem mensagens'; let previewTime = '';
       if (lastMsg) {
         previewTime = lastMsg.created_at;
-        if (lastMsg.message_type === 'text') { const plain = await decryptText(lastMsg.encrypted_content, roomData.code); previewText = plain !== '[DECRYPT_FAILED]' ? plain : '🔒 Mensagem cifrada'; }
+        if (lastMsg.message_type === 'text') { const cryptoVersion = roomData.crypto_version === 2 ? 2 : 1; const rc = createRoomCrypto({ roomCode: roomData.code, cryptoVersion, secret: getRoomSecret(roomData.code) }); const plain = await rc.decryptText(lastMsg.encrypted_content, { messageId: lastMsg.id, type: lastMsg.message_type }); previewText = plain !== DECRYPT_FAILED && plain !== NO_KEY ? plain : '🔒 Mensagem cifrada'; }
         else if (lastMsg.message_type === 'audio') previewText = '🎤 Mensagem de voz';
         else if (lastMsg.message_type === 'image') previewText = '🖼️ Imagem';
         else if (lastMsg.message_type === 'capsule') previewText = '⏳ Cápsula do tempo';

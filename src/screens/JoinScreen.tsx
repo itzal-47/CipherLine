@@ -5,6 +5,8 @@ import { supabase } from '@/lib/supabase';
 import { Typewriter } from '@/components/Typewriter';
 import { saveParticipantCreds } from '@/lib/device';
 import { joinRoomSecure } from '@/lib/participant';
+import { getJoinToken } from '@/lib/roomCrypto';
+import { getRoomSecret, saveRoomSecret } from '@/lib/roomKeys';
 
 interface JoinScreenProps {
   nickname: string;
@@ -15,40 +17,21 @@ interface JoinScreenProps {
     participantId: string,
     secret: string | null,
     isPermanent: boolean,
+    cryptoVersion: 1 | 2,
   ) => void;
   onExpired: (roomCode: string) => void;
   userId?: string;
   initialCode?: string;
+  initialSecret?: string | null;
 }
 
-export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired, userId, initialCode }: JoinScreenProps) {
+export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired, userId, initialCode, initialSecret }: JoinScreenProps) {
   const [code, setCode] = useState(initialCode || '');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
   const sanitizeCode = (raw: string): string => {
     return raw.toUpperCase().replace(/[^A-Z0-9-]/g, '');
-  };
-
-  // Garante que a sala fica salva no dashboard de um usuário logado.
-  const ensureRoomMembership = async (roomId: string) => {
-    if (!userId) return;
-    const { data: existing } = await supabase
-      .from('room_members')
-      .select('id')
-      .eq('room_id', roomId)
-      .eq('user_id', userId)
-      .maybeSingle();
-    if (!existing) {
-      const { error } = await supabase
-        .from('room_members')
-        .insert({ room_id: roomId, user_id: userId, role: 'member' });
-      if (error) {
-        await supabase
-          .from('room_members')
-          .insert({ room_id: roomId, user_id: userId, role: 'member' });
-      }
-    }
   };
 
   const handleJoin = async () => {
@@ -102,17 +85,24 @@ export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired, userI
     // Entrada segura — a RPC trata de reconexão, device_id, user_id
     // e devolve o segredo único que será exigido nas escritas.
     let joined;
+    let usedJoinSecret = false;
     try {
-      joined = await joinRoomSecure(trimmed, nickname, userId || null);
+      const storedSecret = initialSecret || getRoomSecret(trimmed);
+      usedJoinSecret = Boolean(storedSecret);
+      const joinToken = storedSecret ? await getJoinToken(trimmed, storedSecret) : null;
+      joined = await joinRoomSecure(trimmed, nickname, userId || null, joinToken);
     } catch (err) {
-      setError((err as Error).message || 'FALHA AO ENTRAR NO CANAL');
+      const message = (err as Error).message || '';
+      setError(message.includes('JOIN_TOKEN_INVALIDO')
+        ? (usedJoinSecret ? 'LINK DE CONVITE INVÁLIDO' : 'ESTA SALA PRECISA DE UM LINK DE CONVITE')
+        : message || 'FALHA AO ENTRAR NO CANAL');
       setLoading(false);
       return;
     }
 
     saveParticipantCreds(trimmed, nickname, joined.participantId, joined.secret);
-    await ensureRoomMembership(joined.roomId);
-    onChannelJoined(joined.roomId, trimmed, joined.participantId, joined.secret, isPermanent);
+    if (initialSecret) saveRoomSecret(trimmed, initialSecret);
+    onChannelJoined(joined.roomId, trimmed, joined.participantId, joined.secret, isPermanent, joined.cryptoVersion);
   };
 
   return (
@@ -146,10 +136,12 @@ export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired, userI
         className="w-full max-w-sm"
       >
         <div className="glass-cyan clip-hud p-6">
-          <label className="mb-2 flex items-center gap-2 font-mono text-xs tracking-widest text-cyber-text-dim">
+          <label htmlFor="join-room-code" className="mb-2 flex items-center gap-2 font-mono text-xs tracking-widest text-cyber-text-dim">
             CÓDIGO DO CANAL
           </label>
           <input
+            id="join-room-code"
+            name="room-code"
             type="text"
             value={code}
             onChange={(e) => setCode(sanitizeCode(e.target.value))}
@@ -158,8 +150,9 @@ export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired, userI
             }}
             maxLength={24}
             placeholder="XXXX-XXXX"
-            className="w-full bg-transparent text-center font-mono text-2xl font-bold tracking-[0.15em] text-cyber-cyan placeholder-cyber-text-faint focus:outline-none"
-            autoFocus
+            autoComplete="off"
+            spellCheck={false}
+            className="w-full bg-transparent text-center font-mono text-2xl font-bold tracking-[0.15em] text-cyber-cyan placeholder-cyber-text-faint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyber-cyan/50"
             style={{ textTransform: 'uppercase' }}
           />
         </div>

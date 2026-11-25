@@ -15,6 +15,7 @@ export interface SecureJoinResult {
   secret: string;
   roomId: string;
   isPermanent: boolean;
+  cryptoVersion: 1 | 2;
 }
 
 /**
@@ -26,6 +27,7 @@ export async function joinRoomSecure(
   roomCode: string,
   nickname: string,
   userId: string | null = null,
+  joinToken?: string | null,
 ): Promise<SecureJoinResult> {
   const stored = getSavedParticipantCreds(roomCode, nickname);
   let secret = stored?.secret || null;
@@ -42,6 +44,7 @@ export async function joinRoomSecure(
     p_device_id: getDeviceId(),
     p_user_id: userId,
     p_secret: secret, // Envia o segredo (novo ou já guardado)
+    p_join_token: joinToken ?? null,
   });
 
   if (error || !data || data.length === 0) {
@@ -54,6 +57,7 @@ export async function joinRoomSecure(
     secret: secret, // Devolve o segredo que o cliente gerou/guardou
     roomId: row.room_id,
     isPermanent: row.is_permanent,
+    cryptoVersion: row.crypto_version === 2 ? 2 : 1,
   };
 }
 
@@ -101,6 +105,7 @@ export async function insertMessageSecure(params: {
   pollData?: unknown;
   burnAfterListen?: boolean;
   fileName?: string | null;
+  messageId?: string;
 }) {
   const { data, error } = await supabase.rpc('insert_message_secure', {
     p_room_id: params.roomId,
@@ -117,6 +122,7 @@ export async function insertMessageSecure(params: {
     p_poll_data: params.pollData ?? null,
     p_burn_after_listen: params.burnAfterListen ?? false,
     p_file_name: params.fileName ?? null,
+    ...(params.messageId ? { p_message_id: params.messageId } : {}),
   });
   if (error) throw error;
   return data;
@@ -275,12 +281,14 @@ export async function insertEivorakReplySecure(
   callerParticipantId: string,
   callerSecret: string,
   encryptedReply: string,
+  messageId?: string,
 ) {
   const { data, error } = await supabase.rpc('insert_eivorak_reply_secure', {
     p_room_id: roomId,
     p_caller_participant_id: callerParticipantId,
     p_caller_secret: callerSecret,
     p_encrypted_reply: encryptedReply,
+    ...(messageId ? { p_message_id: messageId } : {}),
   });
   if (error) throw error;
   return data;

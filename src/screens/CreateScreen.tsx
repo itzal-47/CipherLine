@@ -8,6 +8,11 @@ import { joinRoomSecure } from '@/lib/participant';
 import { CopyButton } from '@/components/CopyButton';
 import { Typewriter } from '@/components/Typewriter';
 import type { BurnConfig } from '@/types';
+import { CRYPTO_V2_CREATE } from '@/lib/flags';
+import { generateRoomSecret } from '@/lib/cryptoV2';
+import { saveRoomSecret } from '@/lib/roomKeys';
+import { buildInviteUrl } from '@/lib/cryptoV2';
+import { getJoinToken } from '@/lib/roomCrypto';
 
 interface CreateScreenProps {
   nickname: string;
@@ -18,6 +23,7 @@ interface CreateScreenProps {
     participantId: string,
     secret: string | null,
     isPermanent: boolean,
+    cryptoVersion: 1 | 2,
   ) => void;
   isGuest?: boolean;
   userId?: string;
@@ -38,6 +44,7 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
   const [customCode, setCustomCode] = useState('');
   const [codeStatus, setCodeStatus] = useState<'idle' | 'checking' | 'available' | 'taken'>('idle');
   const [roomCode, setRoomCode] = useState('');
+  const [inviteUrl, setInviteUrl] = useState('');
   const [, setParticipantId] = useState('');
   const [status, setStatus] = useState('INICIALIZANDO CANAL SEGURO...');
   const [error, setError] = useState('');
@@ -89,13 +96,23 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
     const isPermanent = isGuest ? false : duration === 'permanent';
     const burnConfig: BurnConfig = { mode: 'off', seconds: 0 };
     const isPublic = visibility === 'public';
+    const cryptoVersion: 1 | 2 = CRYPTO_V2_CREATE ? 2 : 1;
+    const secret = CRYPTO_V2_CREATE ? generateRoomSecret() : null;
+    const joinToken = secret ? await getJoinToken(code, secret) : null;
 
     setRoomCode(code);
 
     const { data: room, error: roomErr } = await supabase.rpc('create_room', {
       p_code: code,
       p_is_permanent: isPermanent,
+      p_owner_id: userId || null,
+      p_name: roomName.trim() || null,
+      p_is_public: isPublic,
+      p_topic: topic || null,
+      p_dead_man_switch_days: isPermanent ? deadManDays : null,
       p_default_burn_config: JSON.parse(JSON.stringify(burnConfig)),
+      p_crypto_version: cryptoVersion,
+      p_join_token: joinToken,
     });
 
     if (roomErr || !room || room.length === 0) {
@@ -106,44 +123,10 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
 
     const createdRoom = Array.isArray(room) ? room[0] : room;
 
-    if (roomName.trim()) {
-      await supabase
-        .from('rooms')
-        .update({ name: roomName.trim() })
-        .eq('id', createdRoom.id);
-    }
-
-    if (userId) {
-      // As alterações em rooms (is_public, owner_id, topic) só ficam visíveis
-      // para o cliente autenticado — o RLS de UPDATE direto em rooms foi
-      // revogado no LOTE 5. Aqui, como somos o dono e a sala acabou de ser
-      // criada, o UPDATE é feito diretamente enquanto o owner_id ainda está
-      // a ser definido. Em produção, mover para RPC dedicada é o próximo passo.
-      await supabase
-        .from('rooms')
-        .update({
-          is_public: isPublic,
-          owner_id: userId,
-          topic: topic || null,
-          dead_man_switch_days: isPermanent ? deadManDays : null,
-        })
-        .eq('id', createdRoom.id);
-
-      const { error: memberErr } = await supabase
-        .from('room_members')
-        .insert({ room_id: createdRoom.id, user_id: userId, role: 'owner' });
-
-      if (memberErr) {
-        await supabase
-          .from('room_members')
-          .insert({ room_id: createdRoom.id, user_id: userId, role: 'owner' });
-      }
-    }
-
     // Entrada segura: cria/retoma participante e obtém segredo único.
     let joined;
     try {
-      joined = await joinRoomSecure(code, userNickname || nickname, userId || null);
+      joined = await joinRoomSecure(code, userNickname || nickname, userId || null, joinToken);
     } catch (err) {
       setError((err as Error).message || 'FALHA AO REGISTRAR PARTICIPANTE');
       setPhase('config');
@@ -151,6 +134,10 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
     }
 
     saveParticipantCreds(code, userNickname || nickname, joined.participantId, joined.secret);
+    if (secret) {
+      saveRoomSecret(code, secret);
+      setInviteUrl(buildInviteUrl(window.location.origin, code, secret));
+    }
     setParticipantId(joined.participantId);
     setStatus('AGUARDANDO PARTICIPANTES...');
     setPhase('waiting');
@@ -162,7 +149,7 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
         { event: 'INSERT', schema: 'public', table: 'participants', filter: `room_id=eq.${createdRoom.id}` },
         (payload) => {
           if (payload.new.id !== joined.participantId) {
-            onChannelCreated(createdRoom.id, code, joined.participantId, joined.secret, isPermanent);
+            onChannelCreated(createdRoom.id, code, joined.participantId, joined.secret, isPermanent, cryptoVersion);
           }
         },
       )
@@ -191,12 +178,12 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
               CÓDIGO DO CANAL
             </div>
             <div className="mb-4 flex items-center justify-center gap-3">
-              <h2 className="font-mono text-4xl font-bold tracking-[0.2em] text-cyber-green glow-green sm:text-5xl">
-                {roomCode}
+              <h2 className={`font-mono font-bold text-cyber-green glow-green ${inviteUrl ? 'break-all text-xs tracking-normal' : 'text-4xl tracking-[0.2em] sm:text-5xl'}`}>
+                {inviteUrl || roomCode}
               </h2>
             </div>
             <div className="flex items-center justify-center">
-              <CopyButton text={roomCode} label="COPIAR CÓDIGO" />
+              <CopyButton text={inviteUrl || roomCode} label={inviteUrl ? 'COPIAR LINK DE CONVITE' : 'COPIAR CÓDIGO'} />
             </div>
             {duration === 'permanent' && !isGuest && (
               <div className="mt-3 font-mono text-[10px] tracking-widest text-cyber-cyan/50">
