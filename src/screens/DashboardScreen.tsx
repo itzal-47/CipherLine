@@ -5,7 +5,8 @@ import { supabase } from '@/lib/supabase';
 import { encryptText } from '@/lib/crypto';
 import { getImageUrl } from '@/lib/media';
 import type { UserProfile, RoomMember, PublicRoom, Friend, Story, StoryView, StoryGroup } from '@/types';
-import { createRoomCrypto, DECRYPT_FAILED, NO_KEY } from '@/lib/roomCryptoClient';
+import { createRoomCrypto } from '@/lib/roomCrypto';
+import { DECRYPT_FAILED, NO_KEY } from '@/lib/cryptoV2';
 import { getRoomSecret } from '@/lib/roomKeys';
 
 interface DashboardScreenProps {

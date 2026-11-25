@@ -12,7 +12,7 @@ import { CRYPTO_V2_CREATE } from '@/lib/flags';
 import { generateRoomSecret } from '@/lib/cryptoV2';
 import { saveRoomSecret } from '@/lib/roomKeys';
 import { buildInviteUrl } from '@/lib/cryptoV2';
-import { getJoinToken } from '@/lib/roomCryptoClient';
+import { getJoinToken } from '@/lib/roomCrypto';
 
 interface CreateScreenProps {
   nickname: string;

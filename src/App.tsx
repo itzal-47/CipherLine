@@ -9,7 +9,7 @@ import { joinRoomSecure, verifyParticipant } from '@/lib/participant';
 import { clearParticipantCreds } from '@/lib/device';
 import { forgetAllRoomSecrets, getRoomSecret } from '@/lib/roomKeys';
 import { parseInviteUrl } from '@/lib/cryptoV2';
-import { getJoinToken, panicWipeCrypto } from '@/lib/roomCryptoClient';
+import { getJoinToken, panicWipeCrypto } from '@/lib/roomCrypto';
 import type { Screen, UserProfile } from '@/types';
 
 const ChatScreen = lazy(() => import('@/screens/ChatScreen').then((module) => ({ default: module.ChatScreen })));

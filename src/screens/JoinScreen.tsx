@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { Typewriter } from '@/components/Typewriter';
 import { saveParticipantCreds } from '@/lib/device';
 import { joinRoomSecure } from '@/lib/participant';
-import { getJoinToken } from '@/lib/roomCryptoClient';
+import { getJoinToken } from '@/lib/roomCrypto';
 import { getRoomSecret, saveRoomSecret } from '@/lib/roomKeys';
 
 interface JoinScreenProps {

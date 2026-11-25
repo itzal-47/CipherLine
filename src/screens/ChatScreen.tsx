@@ -20,7 +20,8 @@ import { jsonToBurnConfig, createBurnConfig, type PollData } from '@/types';
 import type { DecodedMessage, Participant, Reaction, ReadReceipt, BurnConfig, MessageType } from '@/types';
 import { sendOnChannel, type SignalingMessage } from '@/lib/webrtc';
 import { hasPin, setPin, verifyPin } from '@/lib/pin';
-import { createRoomCrypto, DECRYPT_FAILED, NO_KEY } from '@/lib/roomCryptoClient';
+import { createRoomCrypto } from '@/lib/roomCrypto';
+import { DECRYPT_FAILED, NO_KEY } from '@/lib/cryptoV2';
 import { getRoomSecret } from '@/lib/roomKeys';
 
 const CallScreen = lazy(() => import('@/components/CallScreen').then(m => ({ default: m.CallScreen })));
