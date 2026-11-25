@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react';
 import { Clock, Lock, Unlock } from 'lucide-react';
 import type { DecodedMessage } from '@/types';
+import type { RoomCrypto } from '@/lib/roomCrypto';
+import { DECRYPT_FAILED, NO_KEY } from '@/lib/cryptoV2';
 
-export function CapsuleContent({ message }: { message: DecodedMessage }) {
+export function CapsuleContent({ message, rc }: { message: DecodedMessage; rc: RoomCrypto }) {
   const [now, setNow] = useState(Date.now());
-  const [status, setStatus] = useState<'locked' | 'unlocking' | 'unlocked' | 'too-early'>('locked');
+  const [status, setStatus] = useState<'locked' | 'unlocking' | 'unlocked' | 'too-early' | 'error'>('locked');
   const [plaintext, setPlaintext] = useState('');
 
   const unlockAt = message.capsuleUnlockAt ? new Date(message.capsuleUnlockAt).getTime() : 0;
@@ -33,7 +35,9 @@ export function CapsuleContent({ message }: { message: DecodedMessage }) {
     try {
       const { timelockDecryptText } = await import('@/lib/timelock');
       const text = await timelockDecryptText(message.encryptedContent);
-      setPlaintext(text);
+      const opened = rc.version === 2 ? await rc.decryptText(text, { messageId: message.id, type: 'capsule' }) : text;
+      if (opened === NO_KEY || opened === DECRYPT_FAILED) { setStatus('error'); return; }
+      setPlaintext(opened);
       setStatus('unlocked');
     } catch {
       // A rede drand ainda não gerou a rodada — matematicamente impossível
@@ -67,6 +71,8 @@ export function CapsuleContent({ message }: { message: DecodedMessage }) {
           <Clock size={10} />
           ABRE EM {formatCountdown(unlockAt - now)}
         </div>
+      ) : status === 'error' ? (
+        <p className="font-mono text-[10px] text-cyber-text-dim">FALHA AO ABRIR CÁPSULA</p>
       ) : status === 'too-early' ? (
         <div>
           <p className="mb-2 font-mono text-[10px] text-cyber-text-dim">

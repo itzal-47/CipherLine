@@ -2,17 +2,19 @@ import { useEffect, useRef, useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { Play, Pause, Lock } from 'lucide-react';
 import { downloadAndDecryptAudio } from '@/lib/media';
+import type { RoomCrypto } from '@/lib/roomCrypto';
 
 interface AudioPlayerProps {
   storagePath: string;
-  roomCode: string;
+  rc: RoomCrypto;
+  messageId: string;
   durationSeconds: number | null;
   isScrambled: boolean;
   onDecode: () => void;
   onPlay?: () => void;
 }
 
-export function AudioPlayer({ storagePath, roomCode, durationSeconds, isScrambled, onDecode, onPlay }: AudioPlayerProps) {
+export function AudioPlayer({ storagePath, rc, messageId, durationSeconds, isScrambled, onDecode, onPlay }: AudioPlayerProps) {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -37,7 +39,7 @@ export function AudioPlayer({ storagePath, roomCode, durationSeconds, isScramble
     setLoading(true);
     setError('');
     try {
-      const blob = await downloadAndDecryptAudio(storagePath, roomCode);
+      const blob = await downloadAndDecryptAudio(storagePath, rc, { messageId, type: 'audio' });
       const url = URL.createObjectURL(blob);
       setAudioUrl(url);
       onDecode();

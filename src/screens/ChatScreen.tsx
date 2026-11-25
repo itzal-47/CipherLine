@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } fro
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowDown, Send, AlertTriangle, Settings, Lock, Clock, X, Users, Smartphone, Monitor, Mic, Image as ImageIcon, Phone, Video, Reply, XCircle, WifiOff, Sparkles, FileText, Eye, EyeOff, Pin, MoreVertical, BarChart2, Brain, Camera, Hash } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { encryptText } from '@/lib/crypto';
 import { playSendSound, playReceiveSound } from '@/lib/audio';
 import { getDeviceId, getHiddenMessageIds, hideMessageLocally } from '@/lib/device';
 import { requestNotificationPermission, subscribeToPush, unsubscribeFromPush } from '@/lib/push';
@@ -21,6 +20,7 @@ import type { DecodedMessage, Participant, Reaction, ReadReceipt, BurnConfig, Me
 import { sendOnChannel, type SignalingMessage } from '@/lib/webrtc';
 import { hasPin, setPin, verifyPin } from '@/lib/pin';
 import { createRoomCrypto } from '@/lib/roomCrypto';
+import { buildServerPollData, mergePollData } from '@/lib/pollData';
 import { DECRYPT_FAILED, NO_KEY } from '@/lib/cryptoV2';
 import { getRoomSecret } from '@/lib/roomKeys';
 
@@ -372,7 +372,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
 
           let pollData = null;
           if (msg.message_type === 'poll') {
-            try { pollData = JSON.parse(plaintext) as PollData; } catch {}
+            try { pollData = mergePollData(JSON.parse(plaintext) as PollData, msg.poll_data); } catch {}
           }
 
           return {
@@ -421,7 +421,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
         
         let pollData = null;
         if (msg.message_type === 'poll') {
-          try { pollData = JSON.parse(plaintext) as PollData; } catch {}
+          try { pollData = mergePollData(JSON.parse(plaintext) as PollData, msg.poll_data); } catch {}
         }
 
         setMessages((prev) => {
@@ -443,7 +443,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: `room_id=eq.${roomId}` }, (payload) => {
         const msg = payload.new as any;
-        setMessages(prev => prev.map(x => x.id === msg.id ? { ...x, isPinned: msg.is_pinned || false, pollData: msg.poll_data || x.pollData } : (msg.is_pinned ? { ...x, isPinned: false } : x)));
+        setMessages(prev => prev.map(x => x.id === msg.id ? { ...x, isPinned: msg.is_pinned || false, pollData: x.messageType === 'poll' && x.pollData ? mergePollData(x.pollData, msg.poll_data) : x.pollData } : (msg.is_pinned ? { ...x, isPinned: false } : x)));
       })
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages', filter: `room_id=eq.${roomId}` }, (payload) => { const msg = payload.old as any; setMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, state: 'destroyed' as const } : m))); })
       .subscribe((status) => {
@@ -540,7 +540,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
     if (msg) {
       if (!focusMode) playSendSound(); 
       setPulseKey((k) => k + 1);
-      setMessages((prev) => [...prev, { id: msg.id, senderId: participantId, senderNickname: nickname, encryptedContent: encrypted, plaintext: text, createdAt: msg.created_at, isOwn: true, state: 'decoded', destroyAt: burnConfig.seconds > 0 ? Date.now() + (burnConfig.seconds * 1000) : null, burnConfig: burnConfig.seconds > 0 ? burnConfig : null, reactions: [], readBy: [], messageType: 'text' as MessageType, storagePath: null, durationSeconds: null, replyToMessageId: replyTo?.id || null, replyToSenderNickname: replyTo?.senderNickname || null, replyToPlaintext: replyTo?.plaintext?.slice(0, 80) || null, capsuleUnlockAt: null, senderDisplayName: null, senderAvatarUrl: null, targetParticipantId: whisperTo?.id || null, isPinned: false, pollData: null, burnAfterListen: false, fileName: null }]);
+      setMessages((prev) => [...prev, { id: messageId, senderId: participantId, senderNickname: nickname, encryptedContent: encrypted, plaintext: text, createdAt: msg.created_at, isOwn: true, state: 'decoded', destroyAt: burnConfig.seconds > 0 ? Date.now() + (burnConfig.seconds * 1000) : null, burnConfig: burnConfig.seconds > 0 ? burnConfig : null, reactions: [], readBy: [], messageType: 'text' as MessageType, storagePath: null, durationSeconds: null, replyToMessageId: replyTo?.id || null, replyToSenderNickname: replyTo?.senderNickname || null, replyToPlaintext: replyTo?.plaintext?.slice(0, 80) || null, capsuleUnlockAt: null, senderDisplayName: null, senderAvatarUrl: null, targetParticipantId: whisperTo?.id || null, isPinned: false, pollData: null, burnAfterListen: false, fileName: null }]);
       setInput(''); const repliedTo = replyTo; setReplyTo(null); setWhisperTo(null); 
       
       // AQUI ESTÁ A LÓGICA: Se for sistema, ou se tiver @eivorak, chama a IA
@@ -586,19 +586,21 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
       allowMultiple: false
     };
     
-    const encrypted = await encryptText(JSON.stringify(pollDataObj), roomCode);
+    const messageId = crypto.randomUUID();
+    const encrypted = await rc.encryptText(JSON.stringify(pollDataObj), { messageId, type: 'poll' });
+    const serverPollData = buildServerPollData(pollDataObj, cryptoVersion);
     const burnJson = burnConfig.seconds > 0 ? JSON.parse(JSON.stringify(burnConfig)) : null;
     
     try {
       const msg = await insertMessageSecure({
         roomId, participantId, secret: participantSecret, encryptedContent: encrypted,
-        burnConfig: burnJson, messageType: 'poll', pollData: pollDataObj
+        burnConfig: burnJson, messageType: 'poll', pollData: serverPollData, messageId
       });
       if (msg) {
         if (!focusMode) playSendSound(); 
         setPulseKey(k => k + 1);
         setMessages(prev => [...prev, {
-          id: msg.id, senderId: participantId, senderNickname: nickname, encryptedContent: encrypted, plaintext: '',
+          id: messageId, senderId: participantId, senderNickname: nickname, encryptedContent: encrypted, plaintext: '',
           createdAt: msg.created_at, isOwn: true, state: 'decoded', destroyAt: null, burnConfig: null,
           reactions: [], readBy: [], messageType: 'poll', storagePath: null, durationSeconds: null,
           replyToMessageId: null, replyToSenderNickname: null, replyToPlaintext: null, capsuleUnlockAt: null,
@@ -633,7 +635,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
     try {
       setEivorakThinking(true); const recentContext = messages.slice(-10).map((m) => `${m.senderNickname}: ${m.plaintext}`).join('\n'); const urlMatch = userMessage.match(/https?:\/\/[^\s]+/i); const cleanMessage = userMessage.replace(/@eivorak\b/i, '').trim() || userMessage; let imageUrl: string | null = null;
       if (repliedTo?.messageType === 'image' && repliedTo.storagePath) {
-        try { const { downloadAndDecryptImage } = await import('@/lib/media'); const blob = await downloadAndDecryptImage(repliedTo.storagePath, roomCode); imageUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onloadend = () => resolve(reader.result as string); reader.onerror = reject; reader.readAsDataURL(blob); }); } catch { imageUrl = null; }
+        try { const { downloadAndDecryptImage } = await import('@/lib/media'); const blob = await downloadAndDecryptImage(repliedTo.storagePath, rc, { messageId: repliedTo.id, type: 'image' }); imageUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onloadend = () => resolve(reader.result as string); reader.onerror = reject; reader.readAsDataURL(blob); }); } catch { imageUrl = null; }
       }
       const { data, error } = await supabase.functions.invoke('eivorak-agent', { body: { message: cleanMessage, recentContext, linkUrl: urlMatch ? urlMatch[0] : null, imageUrl, isSystemRoom } });
       if (error || !data?.reply) { const detail = (data as any)?.error || error?.message; setSystemMessage(detail ? `EIVORAK: ${String(detail).slice(0, 80)}` : 'EIVORAK NÃO RESPONDEU — TENTE DE NOVO'); setTimeout(() => setSystemMessage(''), 6000); return; }
@@ -654,28 +656,28 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
   };
 
   const handleSendAudio = async (blob: Blob, durationSeconds: number, fileName: string | null, burnAfterListen: boolean) => {
-    setShowAudioRecorder(false); maybeRequestPush(); setUploadProgress(0); const tempId = crypto.randomUUID(); const burnJson = burnConfig.seconds > 0 ? JSON.parse(JSON.stringify(burnConfig)) : null;
+    setShowAudioRecorder(false); maybeRequestPush(); setUploadProgress(0); const messageId = crypto.randomUUID(); const burnJson = burnConfig.seconds > 0 ? JSON.parse(JSON.stringify(burnConfig)) : null;
     try {
-      const storagePath = await uploadEncryptedAudio(roomId, tempId, blob, roomCode, setUploadProgress); const placeholder = await encryptText('[audio]', roomCode);
-      const msg = await insertMessageSecure({ roomId, participantId, secret: participantSecret, encryptedContent: placeholder, burnConfig: burnJson, messageType: 'audio', storagePath, durationSeconds, targetParticipantId: whisperTo?.id || null, burnAfterListen, fileName });
-      if (msg) { if (!focusMode) playSendSound(); setPulseKey((k) => k + 1); setMessages((prev) => [...prev, { id: msg.id, senderId: participantId, senderNickname: nickname, encryptedContent: placeholder, plaintext: '[audio]', createdAt: msg.created_at, isOwn: true, state: 'decoded', destroyAt: burnConfig.seconds > 0 ? Date.now() + (burnConfig.seconds * 1000) : null, burnConfig: burnConfig.seconds > 0 ? burnConfig : null, reactions: [], readBy: [], messageType: 'audio' as MessageType, storagePath, durationSeconds, replyToMessageId: null, replyToSenderNickname: null, replyToPlaintext: null, capsuleUnlockAt: null, senderDisplayName: null, senderAvatarUrl: null, targetParticipantId: whisperTo?.id || null, isPinned: false, pollData: null, burnAfterListen, fileName }]); setWhisperTo(null); }
+      const storagePath = await uploadEncryptedAudio(roomId, blob, rc, { messageId, type: 'audio' }, setUploadProgress); const placeholder = await rc.encryptText('[audio]', { messageId, type: 'audio' });
+      const msg = await insertMessageSecure({ roomId, participantId, secret: participantSecret, encryptedContent: placeholder, burnConfig: burnJson, messageType: 'audio', storagePath, durationSeconds, targetParticipantId: whisperTo?.id || null, burnAfterListen, fileName, messageId });
+      if (msg) { if (!focusMode) playSendSound(); setPulseKey((k) => k + 1); setMessages((prev) => [...prev, { id: messageId, senderId: participantId, senderNickname: nickname, encryptedContent: placeholder, plaintext: '[audio]', createdAt: msg.created_at, isOwn: true, state: 'decoded', destroyAt: burnConfig.seconds > 0 ? Date.now() + (burnConfig.seconds * 1000) : null, burnConfig: burnConfig.seconds > 0 ? burnConfig : null, reactions: [], readBy: [], messageType: 'audio' as MessageType, storagePath, durationSeconds, replyToMessageId: null, replyToSenderNickname: null, replyToPlaintext: null, capsuleUnlockAt: null, senderDisplayName: null, senderAvatarUrl: null, targetParticipantId: whisperTo?.id || null, isPinned: false, pollData: null, burnAfterListen, fileName }]); setWhisperTo(null); }
     } catch { setSystemMessage('FALHA AO ENVIAR ÁUDIO'); setTimeout(() => setSystemMessage(''), 3000); } finally { setUploadProgress(null); }
   };
 
   const handleSendImage = async (blob: Blob) => {
-    setShowImageUploader(false); maybeRequestPush(); setUploadProgress(0); const tempId = crypto.randomUUID(); const burnJson = burnConfig.seconds > 0 ? JSON.parse(JSON.stringify(burnConfig)) : null;
+    setShowImageUploader(false); maybeRequestPush(); setUploadProgress(0); const messageId = crypto.randomUUID(); const burnJson = burnConfig.seconds > 0 ? JSON.parse(JSON.stringify(burnConfig)) : null;
     try {
-      const storagePath = await uploadEncryptedImage(roomId, tempId, blob, roomCode, setUploadProgress); const placeholder = await encryptText('[image]', roomCode);
-      const msg = await insertMessageSecure({ roomId, participantId, secret: participantSecret, encryptedContent: placeholder, burnConfig: burnJson, messageType: 'image', storagePath, targetParticipantId: whisperTo?.id || null });
-      if (msg) { if (!focusMode) playSendSound(); setPulseKey((k) => k + 1); setMessages((prev) => [...prev, { id: msg.id, senderId: participantId, senderNickname: nickname, encryptedContent: placeholder, plaintext: '[image]', createdAt: msg.created_at, isOwn: true, state: 'decoded', destroyAt: burnConfig.seconds > 0 ? Date.now() + (burnConfig.seconds * 1000) : null, burnConfig: burnConfig.seconds > 0 ? burnConfig : null, reactions: [], readBy: [], messageType: 'image' as MessageType, storagePath, durationSeconds: null, replyToMessageId: null, replyToSenderNickname: null, replyToPlaintext: null, capsuleUnlockAt: null, senderDisplayName: null, senderAvatarUrl: null, targetParticipantId: whisperTo?.id || null, isPinned: false, pollData: null, burnAfterListen: false, fileName: null }]); setWhisperTo(null); }
+      const storagePath = await uploadEncryptedImage(roomId, blob, rc, { messageId, type: 'image' }, setUploadProgress); const placeholder = await rc.encryptText('[image]', { messageId, type: 'image' });
+      const msg = await insertMessageSecure({ roomId, participantId, secret: participantSecret, encryptedContent: placeholder, burnConfig: burnJson, messageType: 'image', storagePath, targetParticipantId: whisperTo?.id || null, messageId });
+      if (msg) { if (!focusMode) playSendSound(); setPulseKey((k) => k + 1); setMessages((prev) => [...prev, { id: messageId, senderId: participantId, senderNickname: nickname, encryptedContent: placeholder, plaintext: '[image]', createdAt: msg.created_at, isOwn: true, state: 'decoded', destroyAt: burnConfig.seconds > 0 ? Date.now() + (burnConfig.seconds * 1000) : null, burnConfig: burnConfig.seconds > 0 ? burnConfig : null, reactions: [], readBy: [], messageType: 'image' as MessageType, storagePath, durationSeconds: null, replyToMessageId: null, replyToSenderNickname: null, replyToPlaintext: null, capsuleUnlockAt: null, senderDisplayName: null, senderAvatarUrl: null, targetParticipantId: whisperTo?.id || null, isPinned: false, pollData: null, burnAfterListen: false, fileName: null }]); setWhisperTo(null); }
     } catch { setSystemMessage('FALHA AO ENVIAR IMAGEM'); setTimeout(() => setSystemMessage(''), 3000); } finally { setUploadProgress(null); }
   };
 
   const handleSendCapsule = async (text: string, unlockAt: Date) => {
     setShowCapsuleComposer(false);
     try {
-      const { timelockEncryptText } = await import('@/lib/timelock'); const capsuleCiphertext = await timelockEncryptText(text, unlockAt); const msg = await insertMessageSecure({ roomId, participantId, secret: participantSecret, encryptedContent: capsuleCiphertext, messageType: 'capsule', capsuleUnlockAt: unlockAt.toISOString(), targetParticipantId: whisperTo?.id || null });
-      if (msg) { if (!focusMode) playSendSound(); setPulseKey((k) => k + 1); setMessages((prev) => [...prev, { id: msg.id, senderId: participantId, senderNickname: nickname, encryptedContent: capsuleCiphertext, plaintext: '', createdAt: msg.created_at, isOwn: true, state: 'decoded', destroyAt: null, burnConfig: null, reactions: [], readBy: [], messageType: 'capsule' as MessageType, storagePath: null, durationSeconds: null, replyToMessageId: null, replyToSenderNickname: null, replyToPlaintext: null, capsuleUnlockAt: unlockAt.toISOString(), senderDisplayName: null, senderAvatarUrl: null, targetParticipantId: whisperTo?.id || null, isPinned: false, pollData: null, burnAfterListen: false, fileName: null }]); setWhisperTo(null); }
+      const messageId = crypto.randomUUID(); const { timelockEncryptText } = await import('@/lib/timelock'); const encryptedText = cryptoVersion === 2 ? await rc.encryptText(text, { messageId, type: 'capsule' }) : text; const capsuleCiphertext = await timelockEncryptText(encryptedText, unlockAt); const msg = await insertMessageSecure({ roomId, participantId, secret: participantSecret, encryptedContent: capsuleCiphertext, messageType: 'capsule', messageId, capsuleUnlockAt: unlockAt.toISOString(), targetParticipantId: whisperTo?.id || null });
+      if (msg) { if (!focusMode) playSendSound(); setPulseKey((k) => k + 1); setMessages((prev) => [...prev, { id: messageId, senderId: participantId, senderNickname: nickname, encryptedContent: capsuleCiphertext, plaintext: '', createdAt: msg.created_at, isOwn: true, state: 'decoded', destroyAt: null, burnConfig: null, reactions: [], readBy: [], messageType: 'capsule' as MessageType, storagePath: null, durationSeconds: null, replyToMessageId: null, replyToSenderNickname: null, replyToPlaintext: null, capsuleUnlockAt: unlockAt.toISOString(), senderDisplayName: null, senderAvatarUrl: null, targetParticipantId: whisperTo?.id || null, isPinned: false, pollData: null, burnAfterListen: false, fileName: null }]); setWhisperTo(null); }
     } catch { setSystemMessage('FALHA AO CRIAR CÁPSULA DO TEMPO'); setTimeout(() => setSystemMessage(''), 3000); }
   };
 
@@ -960,7 +962,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
       <div ref={scrollContainerRef} onScroll={handleScroll} className="relative z-10 flex-1 overflow-y-auto overflow-x-hidden px-4 py-4">
         <div className="mx-auto flex max-w-2xl flex-col gap-3">
           <div className="mb-4 text-center"><span className="font-mono text-[10px] tracking-widest text-cyber-text-faint"><Typewriter text={isSystemRoom ? "ESTÁS NA SALA DO EIVORAK. ELE VAI RESPONDER A TUDO." : "CANAL SEGURO ATIVO · MENSAGENS SÃO CIFRADAS PONTA-A-PONTA"} speed={20} showCursor={false} /></span></div>
-          <AnimatePresence>{messages.map((msg) => (<div key={msg.id} data-msg-id={msg.id} className="rounded transition-all duration-1000"><ChatMessage message={msg} roomCode={roomCode} participantId={participantId} isOwner={isOwner} onDestroy={handleDestroy} onDeleteForMe={handleDeleteForMe} onReact={handleReact} onReply={setReplyTo} onReplyPrivate={handleReplyPrivate} onWhisper={(m) => setWhisperTo({ id: m.senderId, nickname: m.senderNickname } as Participant)} onPin={handlePinMessage} onScrollToMessage={handleScrollToMessage} onVote={handleVote} /></div>))}</AnimatePresence>
+          <AnimatePresence>{messages.map((msg) => (<div key={msg.id} data-msg-id={msg.id} className="rounded transition-all duration-1000"><ChatMessage message={msg} rc={rc} participantId={participantId} isOwner={isOwner} onDestroy={handleDestroy} onDeleteForMe={handleDeleteForMe} onReact={handleReact} onReply={setReplyTo} onReplyPrivate={handleReplyPrivate} onWhisper={(m) => setWhisperTo({ id: m.senderId, nickname: m.senderNickname } as Participant)} onPin={handlePinMessage} onScrollToMessage={handleScrollToMessage} onVote={handleVote} /></div>))}</AnimatePresence>
           {eivorakThinking && (<motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex min-w-0 items-center gap-2"><span className="truncate font-mono text-xs text-cyber-magenta/70">EIVORAK ESTÁ PENSANDO</span><div className="flex shrink-0 gap-1">{[0, 1, 2].map((i) => <motion.span key={i} className="h-1 w-1 rounded-full bg-cyber-magenta" animate={{ opacity: [0.3, 1, 0.3] }} transition={{ duration: 0.8, repeat: Infinity, delay: i * 0.15 }} />)}</div></motion.div>)}
           {typingText && (<motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex min-w-0 items-center gap-2"><span className="truncate font-mono text-xs text-cyber-cyan/60">{typingText}</span><div className="flex shrink-0 gap-1">{[0, 1, 2].map((i) => <motion.span key={i} className="h-1 w-1 rounded-full bg-cyber-cyan" animate={{ opacity: [0.3, 1, 0.3] }} transition={{ duration: 1, repeat: Infinity, delay: i * 0.2 }} />)}</div></motion.div>)}
           <div ref={messagesEndRef} />
@@ -989,10 +991,10 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
               <AnimatePresence>{showEivorakMenu && (<motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }} className="absolute bottom-10 right-0 z-30 w-52 clip-hud-sm border border-cyber-magenta/30 bg-cyber-bg/95 p-1 backdrop-blur">{[{ label: 'RESUMIR CONVERSA', prompt: '@eivorak resume a conversa até aqui' }, { label: 'CONVIDAR PRO JOGO', prompt: '@eivorak vamos jogar ' }, { label: 'TRADUZIR', prompt: '@eivorak traduz: ' }, { label: 'TIRAR UMA DÚVIDA', prompt: '@eivorak ' }, { label: 'ANALISAR LINK', prompt: '@eivorak o que achas deste link: ' }].map((opt) => (<button key={opt.label} onClick={() => { setInput(opt.prompt); setShowEivorakMenu(false); inputRef.current?.focus(); }} className="block w-full px-3 py-2 text-left font-mono text-[10px] tracking-widest text-cyber-text-dim transition-colors hover:bg-cyber-magenta/10 hover:text-cyber-magenta">{opt.label}</button>))}</motion.div>)}</AnimatePresence>
             </div>
             
-            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setShowPollCreator(true)} disabled={cryptoVersion === 2} aria-label={cryptoVersion === 2 ? 'Disponível em breve nesta sala' : 'Criar enquete'} className="flex h-11 w-11 shrink-0 items-center justify-center text-cyber-cyan transition-colors hover:text-cyber-cyan-dim disabled:opacity-40" title={cryptoVersion === 2 ? 'Disponível em breve nesta sala' : 'Criar Enquete'}><BarChart2 size={16} /></motion.button>
-            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setShowImageUploader(true)} disabled={cryptoVersion === 2} aria-label={cryptoVersion === 2 ? 'Disponível em breve nesta sala' : 'Enviar imagem'} className="flex h-11 w-11 shrink-0 items-center justify-center text-cyber-cyan transition-colors hover:text-cyber-cyan-dim disabled:opacity-40" title={cryptoVersion === 2 ? 'Disponível em breve nesta sala' : 'Enviar imagem'}><ImageIcon size={16} /></motion.button>
-            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setShowCapsuleComposer(true)} disabled={cryptoVersion === 2} aria-label={cryptoVersion === 2 ? 'Disponível em breve nesta sala' : 'Cápsula do tempo'} className="flex h-11 w-11 shrink-0 items-center justify-center text-cyber-amber transition-colors hover:text-cyber-amber/70 disabled:opacity-40" title={cryptoVersion === 2 ? 'Disponível em breve nesta sala' : 'Cápsula do tempo'}><Clock size={16} /></motion.button>
-            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setShowAudioRecorder(true)} disabled={cryptoVersion === 2} aria-label={cryptoVersion === 2 ? 'Disponível em breve nesta sala' : 'Gravar áudio'} className="flex h-11 w-11 shrink-0 items-center justify-center text-cyber-cyan transition-colors hover:text-cyber-cyan-dim disabled:opacity-40" title={cryptoVersion === 2 ? 'Disponível em breve nesta sala' : 'Gravar áudio'}><Mic size={16} /></motion.button>
+            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setShowPollCreator(true)} aria-label="Criar enquete" className="flex h-11 w-11 shrink-0 items-center justify-center text-cyber-cyan transition-colors hover:text-cyber-cyan-dim disabled:opacity-40" title="Criar Enquete"><BarChart2 size={16} /></motion.button>
+            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setShowImageUploader(true)} aria-label="Enviar imagem" className="flex h-11 w-11 shrink-0 items-center justify-center text-cyber-cyan transition-colors hover:text-cyber-cyan-dim disabled:opacity-40" title="Enviar imagem"><ImageIcon size={16} /></motion.button>
+            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setShowCapsuleComposer(true)} aria-label="Cápsula do tempo" className="flex h-11 w-11 shrink-0 items-center justify-center text-cyber-amber transition-colors hover:text-cyber-amber/70 disabled:opacity-40" title="Cápsula do tempo"><Clock size={16} /></motion.button>
+            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setShowAudioRecorder(true)} aria-label="Gravar áudio" className="flex h-11 w-11 shrink-0 items-center justify-center text-cyber-cyan transition-colors hover:text-cyber-cyan-dim disabled:opacity-40" title="Gravar áudio"><Mic size={16} /></motion.button>
             <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={handleSend} disabled={!input.trim()} className="shrink-0 text-cyber-green transition-colors hover:text-cyber-green-dim disabled:opacity-30"><Send size={16} /></motion.button>
           </div>
         </div>
