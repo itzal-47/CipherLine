@@ -1,19 +1,34 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Scanlines } from '@/components/Scanlines';
 import { HomeScreen } from '@/screens/HomeScreen';
-import { CreateScreen } from '@/screens/CreateScreen';
-import { JoinScreen } from '@/screens/JoinScreen';
-import { ChatScreen } from '@/screens/ChatScreen';
 import { ExpiredScreen } from '@/screens/ExpiredScreen';
-import { LoginScreen } from '@/screens/LoginScreen';
-import { DashboardScreen } from '@/screens/DashboardScreen';
-import { SettingsScreen } from '@/screens/SettingsScreen';
 import { clearCachedKey } from '@/lib/crypto';
 import { supabase } from '@/lib/supabase';
 import { joinRoomSecure, verifyParticipant } from '@/lib/participant';
 import { clearParticipantCreds } from '@/lib/device';
 import type { Screen, UserProfile } from '@/types';
+
+const ChatScreen = lazy(() => import('@/screens/ChatScreen').then((module) => ({ default: module.ChatScreen })));
+const DashboardScreen = lazy(() => import('@/screens/DashboardScreen').then((module) => ({ default: module.DashboardScreen })));
+const SettingsScreen = lazy(() => import('@/screens/SettingsScreen').then((module) => ({ default: module.SettingsScreen })));
+const CreateScreen = lazy(() => import('@/screens/CreateScreen').then((module) => ({ default: module.CreateScreen })));
+const JoinScreen = lazy(() => import('@/screens/JoinScreen').then((module) => ({ default: module.JoinScreen })));
+const LoginScreen = lazy(() => import('@/screens/LoginScreen').then((module) => ({ default: module.LoginScreen })));
+
+function ScreenLoadingFallback() {
+  return (
+    <div className="flex h-full items-center justify-center">
+      <motion.div
+        animate={{ opacity: [0.3, 1, 0.3] }}
+        transition={{ duration: 1, repeat: Infinity }}
+        className="font-mono text-sm tracking-widest text-cyber-green"
+      >
+        INICIALIZANDO...
+      </motion.div>
+    </div>
+  );
+}
 
 interface ChatSession {
   roomId: string;
@@ -440,6 +455,7 @@ export default function App() {
           transition={panicFlash ? { duration: 0 } : { duration: 0.3 }}
           className="h-full w-full"
         >
+          <Suspense fallback={<ScreenLoadingFallback />}>
           {screen === 'login' && (
             <LoginScreen onGuest={handleGuest} onAuthSuccess={handleAuthSuccess} />
           )}
@@ -518,9 +534,11 @@ export default function App() {
               onQuoteConsumed={() => setPendingQuote(null)}
             />
           )}
+          </Suspense>
         </motion.div>
       </AnimatePresence>
 
+      <Suspense fallback={<ScreenLoadingFallback />}>
       <AnimatePresence>
         {showSettings && (
           <SettingsScreen
@@ -553,6 +571,7 @@ export default function App() {
           />
         )}
       </AnimatePresence>
+      </Suspense>
 
       {/* Toast global — erros de navegação / DM */}
       <AnimatePresence>

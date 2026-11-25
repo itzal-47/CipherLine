@@ -12,6 +12,16 @@ export default defineConfig({
   },
   build: {
     target: 'es2020',
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return;
+          if (id.includes('/react/') || id.includes('/react-dom/')) return 'react';
+          if (id.includes('/framer-motion/')) return 'framer-motion';
+          if (id.includes('/@supabase/supabase-js/')) return 'supabase';
+        },
+      },
+    },
   },
   optimizeDeps: {
     exclude: ['lucide-react'],
