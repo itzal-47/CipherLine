@@ -2,12 +2,14 @@ import { webcrypto } from 'node:crypto';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildInviteUrl,
+  clearDerivedKeyCache,
   decryptBinaryV2,
   decryptTextV2,
   deriveRoomKeys,
   encryptBinaryV2,
   encryptTextV2,
   generateRoomSecret,
+  isValidRoomSecret,
   parseInviteUrl,
   type Ctx,
 } from './cryptoV2';
@@ -158,6 +160,16 @@ describe('crypto v2', () => {
     await expect(encryptBinaryV2(new ArrayBuffer(0), invalid, context)).rejects.toThrow();
     await expect(decryptBinaryV2(new Uint8Array([2, ...new Array(28).fill(0)]).buffer, invalid, context)).rejects.toThrow();
   });
+
+  it('valida a codificação base64url canónica do segredo', () => {
+    const secret = generateRoomSecret();
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    const lastIndex = alphabet.indexOf(secret.at(-1) ?? '');
+    const nonCanonical = secret.slice(0, -1) + alphabet[lastIndex ^ 1];
+    expect(isValidRoomSecret(secret)).toBe(true);
+    expect(isValidRoomSecret(nonCanonical)).toBe(false);
+    expect(isValidRoomSecret(null)).toBe(false);
+  });
 });
 
 describe('roomKeys', () => {
@@ -182,6 +194,23 @@ describe('roomKeys', () => {
     expect(localStorage.getItem('cipherline_rk2:ROOM-1')).toBeNull();
     expect(localStorage.getItem('cipherline_rk2:STALE')).toBeNull();
     expect(localStorage.getItem('unrelated')).toBe('keep');
+  });
+
+  it('rejeita segredo não canónico e limpa a cache ao esquecer todas as salas', async () => {
+    const secret = generateRoomSecret();
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    const lastIndex = alphabet.indexOf(secret.at(-1) ?? '');
+    const nonCanonical = secret.slice(0, -1) + alphabet[lastIndex ^ 1];
+    expect(() => saveRoomSecret('NON-CANONICAL', nonCanonical)).toThrow();
+
+    saveRoomSecret('ROOM-CACHE', secret);
+    const previousKeys = await deriveRoomKeys(secret, 'ROOM-CACHE');
+    forgetAllRoomSecrets();
+    expect(getRoomSecret('ROOM-CACHE')).toBeNull();
+    const nextKeys = await deriveRoomKeys(secret, 'ROOM-CACHE');
+    expect(nextKeys.text).not.toBe(previousKeys.text);
+    expect(nextKeys.media).not.toBe(previousKeys.media);
+    clearDerivedKeyCache();
   });
 
   it('mantém o registo em memória se uma escrita no localStorage falhar', () => {

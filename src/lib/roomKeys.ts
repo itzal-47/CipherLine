@@ -1,17 +1,7 @@
-const STORAGE_PREFIX = 'cipherline_rk2:';
-const SECRET_PATTERN = /^[A-Za-z0-9_-]{22}$/;
-const roomSecrets = new Map<string, string>();
+import { clearDerivedKeyCache, isValidRoomSecret } from './cryptoV2';
 
-function isValidSecret(secret: unknown): secret is string {
-  if (typeof secret !== 'string' || !SECRET_PATTERN.test(secret)) return false;
-  try {
-    const base64 = secret.replace(/-/g, '+').replace(/_/g, '/') + '==';
-    const binary = atob(base64);
-    return binary.length === 16;
-  } catch {
-    return false;
-  }
-}
+const STORAGE_PREFIX = 'cipherline_rk2:';
+const roomSecrets = new Map<string, string>();
 
 function getStorage(): Storage | null {
   try {
@@ -22,7 +12,7 @@ function getStorage(): Storage | null {
 }
 
 export function saveRoomSecret(code: string, secret: string): void {
-  if (!isValidSecret(secret)) throw new Error('Segredo inválido.');
+  if (!isValidRoomSecret(secret)) throw new Error('Segredo inválido.');
   roomSecrets.set(code, secret);
   try {
     getStorage()?.setItem(`${STORAGE_PREFIX}${code}`, secret);
@@ -33,7 +23,7 @@ export function saveRoomSecret(code: string, secret: string): void {
 
 export function getRoomSecret(code: string): string | null {
   const inMemory = roomSecrets.get(code);
-  if (inMemory !== undefined) return isValidSecret(inMemory) ? inMemory : null;
+  if (inMemory !== undefined) return isValidRoomSecret(inMemory) ? inMemory : null;
 
   let storedValue: string | null = null;
   try {
@@ -42,12 +32,13 @@ export function getRoomSecret(code: string): string | null {
     return null;
   }
 
-  if (!isValidSecret(storedValue)) return null;
+  if (!isValidRoomSecret(storedValue)) return null;
   roomSecrets.set(code, storedValue);
   return storedValue;
 }
 
 export function forgetRoomSecret(code: string): void {
+  clearDerivedKeyCache();
   roomSecrets.delete(code);
   try {
     getStorage()?.removeItem(`${STORAGE_PREFIX}${code}`);
@@ -57,6 +48,7 @@ export function forgetRoomSecret(code: string): void {
 }
 
 export function forgetAllRoomSecrets(): void {
+  clearDerivedKeyCache();
   roomSecrets.clear();
   try {
     const storage = getStorage();

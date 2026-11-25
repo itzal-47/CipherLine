@@ -96,6 +96,20 @@ function getSecretBytes(secret: string): Uint8Array {
   }
 }
 
+export function isValidRoomSecret(secret: unknown): secret is string {
+  if (typeof secret !== 'string') return false;
+  try {
+    getSecretBytes(secret);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function clearDerivedKeyCache(): void {
+  derivedKeysCache.clear();
+}
+
 function cacheKey(roomCode: string, secret: string): string {
   return JSON.stringify([roomCode, secret]);
 }
