@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowDown, Send, AlertTriangle, Settings, Lock, Clock, X, Users, Smartphone, Monitor, Mic, Image as ImageIcon, Phone, Video, Reply, XCircle, WifiOff, Sparkles, FileText, Eye, EyeOff, Pin, MoreVertical, BarChart2, Brain, Camera, Hash } from 'lucide-react';
+import { ArrowDown, Send, AlertTriangle, Settings, Lock, Clock, X, Users, Smartphone, Monitor, Mic, Image as ImageIcon, Phone, Video, Reply, XCircle, WifiOff, Sparkles, FileText, Eye, EyeOff, Pin, MoreVertical, BarChart2, Brain, Camera, Hash, UserPlus } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { playSendSound, playReceiveSound } from '@/lib/audio';
 import { getDeviceId, getHiddenMessageIds, hideMessageLocally } from '@/lib/device';
@@ -23,6 +23,7 @@ import { createRoomCrypto } from '@/lib/roomCrypto';
 import { buildServerPollData, mergePollData } from '@/lib/pollData';
 import { DECRYPT_FAILED, NO_KEY } from '@/lib/cryptoV2';
 import { getRoomSecret } from '@/lib/roomKeys';
+import { InviteSheet } from '@/components/InviteSheet';
 
 const CallScreen = lazy(() => import('@/components/CallScreen').then(m => ({ default: m.CallScreen })));
 const GroupCallScreen = lazy(() => import('@/components/GroupCallScreen').then(m => ({ default: m.GroupCallScreen })));
@@ -49,7 +50,8 @@ const BURN_OPTIONS: { label: string; value: BurnConfig['mode'] }[] = [
 function vibrate(pattern: number | number[]) { if (typeof navigator !== 'undefined' && 'vibrate' in navigator) { try { navigator.vibrate(pattern); } catch {} } }
 
 export function ChatScreen({ roomId, roomCode, participantId, participantSecret, nickname, isPermanent, cryptoVersion, onLeave, userId, onSuppressScanlines, onOpenPrivateReply, initialQuote, onQuoteConsumed }: ChatScreenProps) {
-  const rc = useMemo(() => createRoomCrypto({ roomCode, cryptoVersion, secret: cryptoVersion === 2 ? getRoomSecret(roomCode) : null }), [roomCode, cryptoVersion]);
+  const roomSecret = cryptoVersion === 2 ? getRoomSecret(roomCode) : null;
+  const rc = useMemo(() => createRoomCrypto({ roomCode, cryptoVersion, secret: roomSecret }), [roomCode, cryptoVersion, roomSecret]);
   const [messages, setMessages] = useState<DecodedMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLocked, setIsLocked] = useState(() => localStorage.getItem(`cipherline_locked_${roomId}`) === 'true');
@@ -62,6 +64,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
   const [whisperTo, setWhisperTo] = useState<Participant | null>(null);
   const [isOwner, setIsOwner] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
+  const [showInvite, setShowInvite] = useState(false);
   
   // EI VORAK E SALAS
   const [isSystemRoom, setIsSystemRoom] = useState(false);
@@ -857,6 +860,14 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
                 <motion.span animate={{ scale: [1, 1.15, 1] }} transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }} className="shrink-0"><Lock size={12} className="text-cyber-green glow-green" /></motion.span>
               )}
               <span className="truncate font-mono text-sm font-bold tracking-widest text-cyber-green glow-green">{roomName || roomCode}</span>
+              <span
+                title={cryptoVersion === 2 ? 'Cifragem versão 2: a chave vem do segredo do convite.' : 'Cifragem versão 1: o código da sala é a chave.'}
+                aria-label={cryptoVersion === 2 ? 'Cifragem versão 2: a chave vem do segredo do convite.' : 'Cifragem versão 1: o código da sala é a chave.'}
+                role="note"
+                className="shrink-0 font-mono text-[8px] text-cyber-text-faint"
+              >
+                {cryptoVersion === 2 ? 'CIFRAGEM V2' : 'CIFRAGEM V1 · LEGADO'}
+              </span>
               <CopyButton text={roomCode} label="COPIAR" />
               {roomName && <span className="shrink-0 font-mono text-[9px] tracking-widest text-cyber-text-faint">{roomCode}</span>}
               {connectionStatus !== 'connected' && (
@@ -898,6 +909,11 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
                 <button onClick={() => setShowMenu(false)} className="text-cyber-text-dim hover:text-cyber-red"><X size={16} /></button>
               </div>
 
+              {cryptoVersion === 2 && roomSecret && (
+                <button onClick={() => { setShowInvite(true); setShowMenu(false); }} className="flex min-h-11 items-center gap-3 px-3 py-2 font-mono text-xs tracking-widest text-cyber-green hover:bg-cyber-green/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyber-green/60">
+                  <UserPlus size={16} aria-hidden="true" /> CONVIDAR
+                </button>
+              )}
               <button onClick={() => { setIsGhost(!isGhost); setShowMenu(false); }} className={`flex items-center gap-3 px-3 py-2 font-mono text-xs tracking-widest transition-colors ${isGhost ? 'text-cyber-cyan bg-cyber-cyan/10' : 'text-cyber-text-dim hover:bg-cyber-panel/50'}`}>
                 {isGhost ? <EyeOff size={16} /> : <Eye size={16} />} MODO FANTASMA
               </button>
@@ -1105,6 +1121,9 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
             autoFocus
           />
         </div>
+      )}
+      {showInvite && cryptoVersion === 2 && roomSecret && (
+        <InviteSheet roomCode={roomCode} secret={roomSecret} onClose={() => setShowInvite(false)} />
       )}
     </div>
   );

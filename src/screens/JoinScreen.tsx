@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { X, LogIn, AlertTriangle } from 'lucide-react';
+import { X, LogIn, AlertTriangle, Lock } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { Typewriter } from '@/components/Typewriter';
 import { saveParticipantCreds } from '@/lib/device';
@@ -121,11 +121,12 @@ export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired, userI
         transition={{ duration: 0.5 }}
         className="mb-8 text-center"
       >
-        <h2 className="font-mono text-2xl font-bold tracking-[0.15em] text-cyber-cyan glow-cyan">
-          ENTRAR EM CANAL
+        <h2 className="flex items-center justify-center gap-2 font-mono text-2xl font-bold tracking-[0.15em] text-cyber-cyan glow-cyan">
+          {initialSecret && <Lock size={20} aria-hidden="true" />}
+          {initialSecret ? 'CONVITE RECEBIDO' : 'ENTRAR EM CANAL'}
         </h2>
         <div className="mt-3 font-mono text-xs tracking-widest text-cyber-text-dim">
-          <Typewriter text="INSIRA O CÓDIGO FORNECIDO" speed={30} />
+          <Typewriter text={initialSecret ? 'ABRIR SALA DO CONVITE' : 'INSIRA O CÓDIGO FORNECIDO'} speed={30} />
         </div>
       </motion.div>
 
@@ -145,6 +146,7 @@ export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired, userI
             type="text"
             value={code}
             onChange={(e) => setCode(sanitizeCode(e.target.value))}
+            readOnly={Boolean(initialSecret)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') handleJoin();
             }}
@@ -176,7 +178,7 @@ export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired, userI
           className="clip-hud-sm mt-6 flex w-full items-center justify-center gap-2 border border-cyber-cyan/30 bg-cyber-cyan/5 px-6 py-4 font-mono text-sm font-bold tracking-widest text-cyber-cyan transition-colors hover:bg-cyber-cyan/10 hover:shadow-[0_0_20px_rgba(0,229,255,0.2)] disabled:opacity-50"
         >
           <LogIn size={16} />
-          {loading ? 'CONECTANDO...' : 'CONECTAR'}
+          {loading ? 'CONECTANDO...' : initialSecret ? 'ENTRAR' : 'CONECTAR'}
         </motion.button>
       </motion.div>
     </div>
