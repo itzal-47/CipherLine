@@ -2,14 +2,16 @@ import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X } from 'lucide-react';
 import { downloadAndDecryptImage } from '@/lib/media';
+import type { RoomCrypto } from '@/lib/roomCrypto';
 
 interface ImageViewerProps {
   storagePath: string;
-  roomCode: string;
+  rc: RoomCrypto;
+  messageId: string;
   onClose: () => void;
 }
 
-export function ImageViewer({ storagePath, roomCode, onClose }: ImageViewerProps) {
+export function ImageViewer({ storagePath, rc, messageId, onClose }: ImageViewerProps) {
   const [url, setUrl] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
 
@@ -19,7 +21,7 @@ export function ImageViewer({ storagePath, roomCode, onClose }: ImageViewerProps
 
     (async () => {
       try {
-        const blob = await downloadAndDecryptImage(storagePath, roomCode);
+        const blob = await downloadAndDecryptImage(storagePath, rc, { messageId, type: 'image' });
         if (cancelled) return;
         revokeUrl = URL.createObjectURL(blob);
         setUrl(revokeUrl);
@@ -32,7 +34,7 @@ export function ImageViewer({ storagePath, roomCode, onClose }: ImageViewerProps
       cancelled = true;
       if (revokeUrl) URL.revokeObjectURL(revokeUrl);
     };
-  }, [storagePath, roomCode]);
+  }, [storagePath, rc, messageId]);
 
   return (
     <AnimatePresence>

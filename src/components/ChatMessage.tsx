@@ -5,6 +5,7 @@ import { playDestroySound } from '@/lib/audio';
 import { downloadAndDecryptImage } from '@/lib/media';
 import { CapsuleContent } from '@/components/CapsuleContent';
 import type { DecodedMessage, Reaction } from '@/types';
+import type { RoomCrypto } from '@/lib/roomCrypto';
 
 const AudioPlayer = lazy(() => import('@/components/AudioPlayer').then(m => ({ default: m.AudioPlayer })));
 const ImageViewer = lazy(() => import('@/components/ImageViewer').then(m => ({ default: m.ImageViewer })));
@@ -13,7 +14,7 @@ const QUICK_EMOJIS = ['\u{1F44D}', '\u{1F525}', '\u{1F602}', '\u{1F62E}'];
 
 interface ChatMessageProps {
   message: DecodedMessage;
-  roomCode: string;
+  rc: RoomCrypto;
   participantId: string;
   isOwner: boolean;
   onDestroy: (id: string) => void;
@@ -27,7 +28,7 @@ interface ChatMessageProps {
   onVote?: (messageId: string, optionId: string) => void; // NOVO: Para as enquetes
 }
 
-export function ChatMessage({ message, roomCode, participantId, isOwner, onDestroy, onDeleteForMe, onReact, onReply, onReplyPrivate, onWhisper, onPin, onScrollToMessage, onVote }: ChatMessageProps) {
+export function ChatMessage({ message, rc, participantId, isOwner, onDestroy, onDeleteForMe, onReact, onReply, onReplyPrivate, onWhisper, onPin, onScrollToMessage, onVote }: ChatMessageProps) {
   const [displayText, setDisplayText] = useState('');
   const [destroyCountdown, setDestroyCountdown] = useState(0);
   const [showReactions, setShowReactions] = useState(false);
@@ -47,7 +48,7 @@ export function ChatMessage({ message, roomCode, participantId, isOwner, onDestr
     let cancelled = false;
     (async () => {
       try {
-        const blob = await downloadAndDecryptImage(message.storagePath!, roomCode);
+        const blob = await downloadAndDecryptImage(message.storagePath!, rc, { messageId: message.id, type: 'image' });
         if (cancelled) return;
         revokeUrl = URL.createObjectURL(blob);
         setThumbUrl(revokeUrl);
@@ -57,7 +58,7 @@ export function ChatMessage({ message, roomCode, participantId, isOwner, onDestr
       cancelled = true;
       if (revokeUrl) URL.revokeObjectURL(revokeUrl);
     };
-  }, [message.messageType, message.storagePath, roomCode]);
+  }, [message.id, message.messageType, message.storagePath, rc]);
 
   // Refs para long-press: se estivessem em useState, cada setLongPressTimer
   // forcava re-render desnecessario e o timer perdia-se entre renders.
@@ -198,7 +199,7 @@ export function ChatMessage({ message, roomCode, participantId, isOwner, onDestr
           <Suspense fallback={<span className="font-mono text-xs text-cyber-text-dim">CARREGANDO...</span>}>
             <AudioPlayer 
               storagePath={message.storagePath} 
-              roomCode={roomCode} 
+              rc={rc} messageId={message.id}
               durationSeconds={message.durationSeconds} 
               isScrambled={false} 
               onDecode={() => {}} 
@@ -229,7 +230,7 @@ export function ChatMessage({ message, roomCode, participantId, isOwner, onDestr
       return (<div className="relative min-w-0"><motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="relative overflow-hidden clip-hud-sm"><img src={thumbUrl} alt="img" className="max-h-64 w-full cursor-pointer object-cover" onClick={(e) => { e.stopPropagation(); setShowImageViewer(true); }} /></motion.div></div>);
     }
 
-    if (isCapsule) return <CapsuleContent message={message} />;
+    if (isCapsule) return <CapsuleContent message={message} rc={rc} />;
 
     if (isPoll && message.pollData) {
       return (
@@ -371,7 +372,7 @@ export function ChatMessage({ message, roomCode, participantId, isOwner, onDestr
           </motion.div>
         </div>
       </div>
-      {showImageViewer && isImage && message.storagePath && (<Suspense fallback={null}><ImageViewer storagePath={message.storagePath} roomCode={roomCode} onClose={() => setShowImageViewer(false)} /></Suspense>)}
+      {showImageViewer && isImage && message.storagePath && (<Suspense fallback={null}><ImageViewer storagePath={message.storagePath} rc={rc} messageId={message.id} onClose={() => setShowImageViewer(false)} /></Suspense>)}
     </motion.div>
   );
 }

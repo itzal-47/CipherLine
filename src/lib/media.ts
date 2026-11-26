@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { encryptBinary, decryptBinary } from './crypto';
+import type { RoomCrypto, MsgCtx } from './roomCrypto';
 
 const BUCKET = 'cipherline-media';
 
@@ -9,15 +9,15 @@ const BUCKET = 'cipherline-media';
 
 export async function uploadEncryptedAudio(
   roomId: string,
-  messageId: string,
   audioBlob: Blob,
-  roomCode: string,
+  rc: RoomCrypto,
+  ctx: MsgCtx,
   _onProgress?: (pct: number) => void,
 ): Promise<string> {
   const arrayBuffer = await audioBlob.arrayBuffer();
-  const encrypted = await encryptBinary(arrayBuffer, roomCode);
+  const encrypted = await rc.encryptBinary(arrayBuffer, ctx);
   const encryptedBlob = new Blob([encrypted], { type: 'application/octet-stream' });
-  const path = `audio/${roomId}/${messageId}.webm`;
+  const path = `audio/${roomId}/${ctx.messageId}.webm`;
 
   const { error } = await supabase.storage
     .from(BUCKET)
@@ -32,7 +32,8 @@ export async function uploadEncryptedAudio(
 
 export async function downloadAndDecryptAudio(
   storagePath: string,
-  roomCode: string,
+  rc: RoomCrypto,
+  ctx: MsgCtx,
 ): Promise<Blob> {
   const { data, error } = await supabase.storage
     .from(BUCKET)
@@ -41,7 +42,7 @@ export async function downloadAndDecryptAudio(
   if (error || !data) throw error ?? new Error('Download failed');
 
   const encryptedBuffer = await data.arrayBuffer();
-  const decrypted = await decryptBinary(encryptedBuffer, roomCode);
+  const decrypted = await rc.decryptBinary(encryptedBuffer, ctx);
   return new Blob([decrypted], { type: 'audio/webm' });
 }
 
@@ -51,15 +52,15 @@ export async function downloadAndDecryptAudio(
 
 export async function uploadEncryptedImage(
   roomId: string,
-  messageId: string,
   imageBlob: Blob,
-  roomCode: string,
+  rc: RoomCrypto,
+  ctx: MsgCtx,
   _onProgress?: (pct: number) => void,
 ): Promise<string> {
   const arrayBuffer = await imageBlob.arrayBuffer();
-  const encrypted = await encryptBinary(arrayBuffer, roomCode);
+  const encrypted = await rc.encryptBinary(arrayBuffer, ctx);
   const encryptedBlob = new Blob([encrypted], { type: 'application/octet-stream' });
-  const path = `images/${roomId}/${messageId}.enc`;
+  const path = `images/${roomId}/${ctx.messageId}.enc`;
 
   const { error } = await supabase.storage
     .from(BUCKET)
@@ -75,13 +76,12 @@ export async function uploadEncryptedImage(
 /**
  * Baixa uma imagem de mensagem e tenta decifrá-la com a chave da sala.
  *
- * Compatibilidade: se a decifra falhar (imagem antiga, upload antes do
- * LOTE 7.1, em claro no bucket), devolve os bytes como estão — o
- * chamador recebe sempre um Blob válido, cifrado ou não.
+ * Só salas v1 aceitam imagens legacy em claro.
  */
 export async function downloadAndDecryptImage(
   storagePath: string,
-  roomCode: string,
+  rc: RoomCrypto,
+  ctx: MsgCtx,
 ): Promise<Blob> {
   const { data, error } = await supabase.storage
     .from(BUCKET)
@@ -92,11 +92,11 @@ export async function downloadAndDecryptImage(
   const rawBuffer = await data.arrayBuffer();
 
   try {
-    const decrypted = await decryptBinary(rawBuffer, roomCode);
+    const decrypted = await rc.decryptBinary(rawBuffer, ctx);
     return new Blob([decrypted], { type: 'image/jpeg' });
   } catch {
-    // Imagem legacy em claro — devolve como está
-    return new Blob([rawBuffer], { type: 'image/jpeg' });
+    if (rc.version === 1) return new Blob([rawBuffer], { type: 'image/jpeg' });
+    throw new Error('Falha ao decifrar imagem');
   }
 }
 
