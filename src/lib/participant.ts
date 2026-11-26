@@ -9,6 +9,7 @@
 
 import { supabase } from './supabase';
 import { getDeviceId, getSavedParticipantCreds } from './device';
+import { PARTICIPANT_COLUMNS } from './columns';
 
 export interface SecureJoinResult {
   participantId: string;
@@ -71,7 +72,7 @@ export async function verifyParticipant(
   if (!secret) {
     const { data } = await supabase
       .from('participants')
-      .select('id')
+      .select(PARTICIPANT_COLUMNS.identity)
       .eq('id', participantId)
       .maybeSingle();
     return !!data;

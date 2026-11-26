@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { supabase } from './supabase';
 import type { UserProfile } from '@/types';
+import { PROFILE_COLUMNS } from './columns';
 
 export function useAuth() {
   const [session, setSession] = useState<any>(null);
@@ -35,7 +36,7 @@ export function useAuth() {
   const loadProfile = async (userId: string) => {
     const { data } = await supabase
       .from('profiles')
-      .select('*')
+      .select(PROFILE_COLUMNS.account)
       .eq('id', userId)
       .maybeSingle();
 

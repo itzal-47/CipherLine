@@ -2,9 +2,7 @@ export type Screen = 'home' | 'create' | 'join' | 'chat' | 'expired' | 'login' |
 
 export interface UserProfile {
   id: string;
-  email: string;
   nickname: string;
-  created_at: string;
   theme_preference?: 'default' | 'overide' | null;
   display_name?: string | null;
   avatar_path?: string | null;
@@ -79,11 +77,11 @@ export interface Room {
 
 export interface Participant {
   id: string;
-  room_id: string;
+  room_id?: string;
   nickname: string;
-  joined_at: string;
+  joined_at?: string;
   last_seen: string;
-  device_id: string | null;
+  device_id?: string | null;
 }
 
 export type MessageType = 'text' | 'audio' | 'image' | 'capsule' | 'poll';

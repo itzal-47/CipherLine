@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { encryptText } from '@/lib/crypto';
 import { getImageUrl } from '@/lib/media';
 import type { UserProfile, RoomMember, PublicRoom, Friend, Story, StoryView, StoryGroup } from '@/types';
+import { PROFILE_COLUMNS } from '@/lib/columns';
 import { createRoomCrypto } from '@/lib/roomCrypto';
 import { DECRYPT_FAILED, NO_KEY } from '@/lib/cryptoV2';
 import { getRoomSecret } from '@/lib/roomKeys';
@@ -138,7 +139,7 @@ export function DashboardScreen({ profile, onJoinRoom, onCreateChannel, onJoinBy
 
   const loadDashboardBg = async () => {
     if (!profile.id) return;
-    const { data } = await supabase.from('profiles').select('dashboard_bg_path, dashboard_bg_mode').eq('id', profile.id).maybeSingle();
+    const { data } = await supabase.from('profiles').select(PROFILE_COLUMNS.dashboardBackground).eq('id', profile.id).maybeSingle();
     if (data?.dashboard_bg_path) {
       const url = await getImageUrl(data.dashboard_bg_path);
       setDashboardBgUrl(url);
@@ -191,7 +192,7 @@ export function DashboardScreen({ profile, onJoinRoom, onCreateChannel, onJoinBy
       const pendingIds = pending.map(f => f.user_id);
       const allIds = [...friendIds, ...pendingIds];
       if (allIds.length > 0) {
-        const { data: profiles } = await supabase.from('profiles').select('*').in('id', allIds);
+        const { data: profiles } = await supabase.from('profiles').select(PROFILE_COLUMNS.publicProfile).in('id', allIds);
         const friendsWithProfile: (Friend & { profile: UserProfile })[] = [];
         for (const f of accepted) {
           const friendId = f.user_id === profile.id ? f.friend_id : f.user_id;
@@ -214,7 +215,7 @@ export function DashboardScreen({ profile, onJoinRoom, onCreateChannel, onJoinBy
     const { data } = await supabase.from('stories').select('*').gt('expires_at', new Date().toISOString()).order('created_at', { ascending: true });
     if (data) {
       const userIds = [...new Set(data.map(s => s.user_id))];
-      const { data: profiles } = await supabase.from('profiles').select('*').in('id', userIds);
+      const { data: profiles } = await supabase.from('profiles').select(PROFILE_COLUMNS.publicProfile).in('id', userIds);
       const myStoriesData = data.filter(s => s.user_id === profile.id);
       setMyStories(myStoriesData.map(s => ({ ...s, profile: profiles?.find(p => p.id === s.user_id) })));
       const others = data.filter(s => s.user_id !== profile.id);

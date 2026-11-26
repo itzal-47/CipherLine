@@ -7,6 +7,7 @@ import { getDeviceId, getHiddenMessageIds, hideMessageLocally } from '@/lib/devi
 import { requestNotificationPermission, subscribeToPush, unsubscribeFromPush } from '@/lib/push';
 import { uploadEncryptedAudio, uploadEncryptedImage, uploadBackgroundImage, getImageUrl, deleteStorageFile } from '@/lib/media';
 import { insertMessageSecure, deleteMessageSecure, reactSecure, unreactSecure, markReadSecure, updatePresenceSecure, upsertPasteSecure, updateRoomSecure, updateParticipantProfileSecure, updateRoomBurnConfigSecure, leaveRoomSecure, insertEivorakReplySecure, deleteParticipantCompletelySecure, togglePinMessageSecure, votePollSecure } from '@/lib/participant';
+import { PARTICIPANT_COLUMNS, PROFILE_COLUMNS } from '@/lib/columns';
 import { StatusDot } from '@/components/StatusDot';
 import { CopyButton } from '@/components/CopyButton';
 import { Typewriter } from '@/components/Typewriter';
@@ -177,7 +178,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
       }
       setIsOwner(data?.owner_id === userId);
     });
-    if (userId) { supabase.from('participants').select('show_profile').eq('id', participantId).maybeSingle().then(({ data }) => { setEditShowProfile(data?.show_profile || false); }); }
+    if (userId) { supabase.from('participants').select(PARTICIPANT_COLUMNS.showProfile).eq('id', participantId).maybeSingle().then(({ data }) => { setEditShowProfile(data?.show_profile || false); }); }
 
     pasteChannelRef.current = supabase.channel(`paste-${roomId}`).on('postgres_changes', { event: '*', schema: 'public', table: 'room_pastes', filter: `room_id=eq.${roomId}` }, async (payload: any) => {
         if (pasteTextareaFocusedRef.current) return;
@@ -260,7 +261,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
     }
 
     // 2. Fundo do Dashboard (se a opção estiver ligada)
-    const { data: profile } = await supabase.from('profiles').select('default_background_path, default_background_mode, dashboard_bg_path, dashboard_bg_mode, dashboard_bg_apply_to_chats').eq('id', userId).maybeSingle();
+    const { data: profile } = await supabase.from('profiles').select(PROFILE_COLUMNS.chatBackground).eq('id', userId).maybeSingle();
     
     if (profile?.dashboard_bg_apply_to_chats && profile?.dashboard_bg_path) {
       const url = await getImageUrl(profile.dashboard_bg_path);
@@ -287,7 +288,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
         if (existing?.background_path) await deleteStorageFile(existing.background_path).catch(() => {});
         await supabase.from('room_members').update({ background_path: path, background_mode: mode }).eq('room_id', roomId).eq('user_id', userId);
       } else {
-        const { data: existing } = await supabase.from('profiles').select('default_background_path').eq('id', userId).maybeSingle();
+        const { data: existing } = await supabase.from('profiles').select(PROFILE_COLUMNS.defaultBackground).eq('id', userId).maybeSingle();
         if (existing?.default_background_path) await deleteStorageFile(existing.default_background_path).catch(() => {});
         await supabase.from('profiles').update({ default_background_path: path, default_background_mode: mode }).eq('id', userId);
       }
@@ -309,7 +310,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
     try {
       const [{ data: existingMsgs }, { data: parts }] = await Promise.all([
         supabase.from('messages').select('*').eq('room_id', roomId).order('created_at', { ascending: false }).limit(100),
-        supabase.from('participants').select('*').eq('room_id', roomId),
+        supabase.from('participants').select(PARTICIPANT_COLUMNS.room).eq('room_id', roomId),
       ]);
 
       // Buscar reactions e receipts apenas das mensagens carregadas, em vez de
@@ -340,7 +341,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
       const profileByParticipantId = new Map<string, { displayName: string | null; avatarUrl: string | null }>();
       const revealedUserIds = (parts || []).filter((p: any) => p.show_profile && p.user_id).map((p: any) => p.user_id as string);
       if (revealedUserIds.length > 0) {
-        const { data: profilesData } = await supabase.from('profiles').select('id, display_name, avatar_path').in('id', revealedUserIds);
+        const { data: profilesData } = await supabase.from('profiles').select(PROFILE_COLUMNS.revealedProfile).in('id', revealedUserIds);
         const avatarUrls = new Map<string, string>();
         await Promise.all(
         (profilesData || [])
@@ -415,9 +416,9 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
     const channel = supabase.channel(`chat-${roomId}`);
     channel.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `room_id=eq.${roomId}` }, async (payload) => {
         const msg = payload.new as any; if (msg.sender_id === participantId) return;
-        const decrypted = await rc.decryptText(msg.encrypted_content, { messageId: msg.id, type: msg.message_type || 'text' }); const plaintext = decrypted === NO_KEY ? DECRYPT_FAILED : decrypted; const { data: sender } = await supabase.from('participants').select('nickname, show_profile, user_id').eq('id', msg.sender_id).maybeSingle();
+        const decrypted = await rc.decryptText(msg.encrypted_content, { messageId: msg.id, type: msg.message_type || 'text' }); const plaintext = decrypted === NO_KEY ? DECRYPT_FAILED : decrypted; const { data: sender } = await supabase.from('participants').select(PARTICIPANT_COLUMNS.sender).eq('id', msg.sender_id).maybeSingle();
         let senderDisplayName: string | null = null, senderAvatarUrl: string | null = null;
-        if (sender?.show_profile && sender?.user_id) { const { data: pr } = await supabase.from('profiles').select('display_name, avatar_path').eq('id', sender.user_id).maybeSingle(); senderDisplayName = pr?.display_name || null; senderAvatarUrl = pr?.avatar_path ? await getImageUrl(pr.avatar_path) : null; }
+        if (sender?.show_profile && sender?.user_id) { const { data: pr } = await supabase.from('profiles').select(PROFILE_COLUMNS.sender).eq('id', sender.user_id).maybeSingle(); senderDisplayName = pr?.display_name || null; senderAvatarUrl = pr?.avatar_path ? await getImageUrl(pr.avatar_path) : null; }
         const msgBurn = msg.burn_config ? jsonToBurnConfig(msg.burn_config) : null;
         if (!focusMode) playReceiveSound(); 
         setPulseKey((k) => k + 1); vibrate(60); setSystemMessage('NOVA TRANSMISSÃO RECEBIDA'); setTimeout(() => setSystemMessage(''), 2000);
@@ -486,7 +487,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
   };
 
   const reconcileParticipants = async () => {
-    const { data } = await supabase.from('participants').select('*').eq('room_id', roomId); if (!data) return;
+    const { data } = await supabase.from('participants').select(PARTICIPANT_COLUMNS.room).eq('room_id', roomId); if (!data) return;
     setPeers((prev) => { const known = new Set(prev.map((p) => p.id)); const fresh = data.filter((p) => p.id !== participantId); fresh.filter((p) => !known.has(p.id)).forEach((p) => { setSystemMessage(`${p.nickname?.toUpperCase() || 'PARTICIPANTE'} CONECTADO`); setTimeout(() => setSystemMessage(''), 3000); }); return fresh; });
     setAllParticipants(data);
   };
@@ -722,7 +723,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
 
   const handleReplyPrivate = async (message: DecodedMessage) => {
     if (!userId) { setSystemMessage('PRECISA DE CONTA PARA CONVERSAS PRIVADAS'); setTimeout(() => setSystemMessage(''), 3000); return; }
-    const { data: senderParticipant } = await supabase.from('participants').select('user_id').eq('id', message.senderId).maybeSingle();
+    const { data: senderParticipant } = await supabase.from('participants').select(PARTICIPANT_COLUMNS.user).eq('id', message.senderId).maybeSingle();
     if (!senderParticipant?.user_id) { setSystemMessage('ESSA PESSOA ESTÁ SEM CONTA'); setTimeout(() => setSystemMessage(''), 4000); return; }
     if (senderParticipant.user_id === userId) { setSystemMessage('ESSA MENSAGEM É SUA'); setTimeout(() => setSystemMessage(''), 3000); return; }
     try {
@@ -822,7 +823,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
   };
   const handleSairDefinitivamente = async () => {
     await unsubscribeFromPush(participantId).catch(() => {}); try { await deleteParticipantCompletelySecure(participantId, participantSecret); } catch {}
-    if (!isPermanent) { const { count } = await supabase.from('participants').select('*', { count: 'exact', head: true }).eq('room_id', roomId); if (count === 0) { const { data: mediaMsgs } = await supabase.from('messages').select('storage_path').eq('room_id', roomId).not('storage_path', 'is', null); if (mediaMsgs && mediaMsgs.length > 0) { const paths = mediaMsgs.map((m) => m.storage_path).filter(Boolean) as string[]; await supabase.storage.from('cipherline-media').remove(paths); } } }
+    if (!isPermanent) { const { count } = await supabase.from('participants').select(PARTICIPANT_COLUMNS.identity, { count: 'exact', head: true }).eq('room_id', roomId); if (count === 0) { const { data: mediaMsgs } = await supabase.from('messages').select('storage_path').eq('room_id', roomId).not('storage_path', 'is', null); if (mediaMsgs && mediaMsgs.length > 0) { const paths = mediaMsgs.map((m) => m.storage_path).filter(Boolean) as string[]; await supabase.storage.from('cipherline-media').remove(paths); } } }
     onLeave();
   };
 
