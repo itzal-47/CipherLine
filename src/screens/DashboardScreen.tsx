@@ -246,7 +246,7 @@ export function DashboardScreen({ profile, onJoinRoom, onCreateChannel, onJoinBy
     if (!activeGroup.is_own) {
       supabase.from('story_views').upsert({ story_id: currentStory.id, viewer_id: profile.id, is_anonymous: true }, { onConflict: 'story_id, viewer_id' }).then();
     } else {
-      supabase.from('story_views').select(`*, profile:profiles(*)`).eq('story_id', currentStory.id).order('created_at', { ascending: false }).then(({ data }) => setViewersList((data as StoryView[]) || []));
+      supabase.from('story_views').select(`*, profile:profiles(${PROFILE_COLUMNS.publicProfile})`).eq('story_id', currentStory.id).order('created_at', { ascending: false }).then(({ data }) => setViewersList((data as StoryView[]) || []));
     }
     const timer = setTimeout(() => { handleNextStory(); }, 5000);
     return () => clearTimeout(timer);
