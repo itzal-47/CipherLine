@@ -4,9 +4,24 @@ import webpush from "npm:web-push@3.6.7";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey, X-Push-Secret",
 };
 
+function secretsMatch(actual: string, expected: string): boolean {
+  const encoder = new TextEncoder();
+  const actualBytes = encoder.encode(actual);
+  const expectedBytes = encoder.encode(expected);
+  if (actualBytes.length !== expectedBytes.length) return false;
+
+  let difference = 0;
+  for (let i = 0; i < actualBytes.length; i++) {
+    difference |= actualBytes[i] ^ expectedBytes[i];
+  }
+  return difference === 0;
+}
+
+// O trigger SQL envia a senha em x-push-secret, guardada no vault como
+// push_webhook_secret e nos segredos da função como PUSH_WEBHOOK_SECRET.
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 200, headers: corsHeaders });
@@ -15,19 +30,19 @@ Deno.serve(async (req: Request) => {
   try {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const expectedPushSecret = Deno.env.get("PUSH_WEBHOOK_SECRET");
     const vapidPublicKey = Deno.env.get("VAPID_PUBLIC_KEY");
     const vapidPrivateKey = Deno.env.get("VAPID_PRIVATE_KEY");
 
-    // ============================================================
-    // AUTENTICAÇÃO
-    //
-    // Esta função é chamada pelo trigger SQL (não por utilizadores), e o
-    // trigger envia o service_role_key no header Authorization. Só quem
-    // tem esse valor pode disparar pushes — evita spam de notificações.
-    // ============================================================
-    const authHeader = req.headers.get("Authorization");
-    const expectedToken = `Bearer ${serviceRoleKey}`;
-    if (!authHeader || authHeader !== expectedToken) {
+    if (!expectedPushSecret || expectedPushSecret.length < 32) {
+      return new Response(
+        JSON.stringify({ error: "Push secret not configured" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const providedPushSecret = req.headers.get("x-push-secret");
+    if (!providedPushSecret || !secretsMatch(providedPushSecret, expectedPushSecret)) {
       return new Response(
         JSON.stringify({ error: "Unauthorized" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },
