@@ -188,7 +188,6 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
                 <div className="mb-4 inline-flex min-h-8 items-center gap-2 rounded border border-cyber-green/30 bg-cyber-green/10 px-3 font-mono text-xs text-cyber-green">
                   <Lock size={14} aria-hidden="true" /> Sala cifrada
                 </div>
-                <CopyButton text={roomCode} label="COPIAR CÓDIGO" />
                 <button
                   onClick={() => setShowInvite(true)}
                   className="clip-hud-sm mt-4 min-h-12 w-full border border-cyber-green/40 bg-cyber-green/10 px-5 py-3 font-mono text-sm font-bold tracking-widest text-cyber-green transition-colors hover:bg-cyber-green/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyber-green/60"
@@ -240,7 +239,7 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
               transition={{ delay: 1 }}
               className="mt-4 font-mono text-xs tracking-widest text-cyber-text-faint"
             >
-              COMPARTILHE O CÓDIGO COM SEU CONTATO
+              {createdCryptoVersion === 2 ? 'ENVIA O CONVITE (LINK OU QR) AO TEU CONTATO' : 'COMPARTILHE O CÓDIGO COM SEU CONTATO'}
             </motion.div>
           </motion.div>
 

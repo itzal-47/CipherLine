@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Lock, QrCode, Share2, X } from 'lucide-react';
 import { buildInviteUrl } from '@/lib/cryptoV2';
 import { renderInviteQrSvg } from '@/lib/inviteQr';
@@ -20,7 +21,6 @@ export function InviteSheet({ roomCode, secret, onClose }: InviteSheetProps) {
   const isMountedRef = useRef(true);
   const triggerRef = useRef<HTMLElement | null>(null);
   const focusRestoreTimeoutRef = useRef<number | null>(null);
-  const urlRef = useRef(buildInviteUrl(window.location.origin, roomCode, secret));
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -57,7 +57,6 @@ export function InviteSheet({ roomCode, secret, onClose }: InviteSheetProps) {
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
       document.body.style.overflow = previousOverflow;
-      urlRef.current = '';
       isMountedRef.current = false;
       focusRestoreTimeoutRef.current = window.setTimeout(() => triggerRef.current?.focus(), 0);
       if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
@@ -70,14 +69,13 @@ export function InviteSheet({ roomCode, secret, onClose }: InviteSheetProps) {
     setQrSvg('');
     setQrState('idle');
     setFeedback('');
-    urlRef.current = '';
     onClose();
   };
 
   const copyInvite = async () => {
     try {
       if (!navigator.clipboard?.writeText) throw new Error('Clipboard indisponível');
-      await navigator.clipboard.writeText(urlRef.current);
+      await navigator.clipboard.writeText(buildInviteUrl(window.location.origin, roomCode, secret));
       setFeedback('Copiado');
       if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
       copyTimerRef.current = setTimeout(() => setFeedback(''), 2000);
@@ -92,7 +90,7 @@ export function InviteSheet({ roomCode, secret, onClose }: InviteSheetProps) {
         await navigator.share({
           title: 'CipherLine',
           text: 'Entra na minha sala cifrada',
-          url: urlRef.current,
+          url: buildInviteUrl(window.location.origin, roomCode, secret),
         });
         return;
       } catch (error) {
@@ -111,7 +109,7 @@ export function InviteSheet({ roomCode, secret, onClose }: InviteSheetProps) {
     setQrState('loading');
     setFeedback('');
     try {
-      const svg = await renderInviteQrSvg(urlRef.current);
+      const svg = await renderInviteQrSvg(buildInviteUrl(window.location.origin, roomCode, secret));
       if (!isMountedRef.current) return;
       setQrSvg(svg);
       setQrState('ready');
@@ -120,7 +118,7 @@ export function InviteSheet({ roomCode, secret, onClose }: InviteSheetProps) {
     }
   };
 
-  return (
+  return createPortal((
     <div
       className="fixed inset-0 z-[100] flex items-end justify-center bg-black/70"
       onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}
@@ -171,5 +169,5 @@ export function InviteSheet({ roomCode, secret, onClose }: InviteSheetProps) {
         )}
       </div>
     </div>
-  );
+  ), document.body);
 }
