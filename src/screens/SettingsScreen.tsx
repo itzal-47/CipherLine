@@ -9,6 +9,7 @@ import { ImageUploader } from '@/components/ImageUploader';
 import { getImageUrl, deleteStorageFile, uploadBackgroundImage } from '@/lib/media';
 import { hasPin, setPin, clearPin } from '@/lib/pin';
 import type { UserProfile } from '@/types';
+import { PROFILE_COLUMNS } from '@/lib/columns';
 
 function InstagramIcon({ size = 14, className = '' }: { size?: number; className?: string }) {
   return (
@@ -49,6 +50,7 @@ export function SettingsScreen({ profile, onClose, onSignOut, onAccountDeleted, 
   const [showAvatarPicker, setShowAvatarPicker] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileSaved, setProfileSaved] = useState(false);
+  const [accountEmail, setAccountEmail] = useState('');
 
   // Fundo do Dashboard
   const [dashBgUrl, setDashBgUrl] = useState<string | null>(null);
@@ -58,6 +60,7 @@ export function SettingsScreen({ profile, onClose, onSignOut, onAccountDeleted, 
   const [dashBgSaving, setDashBgSaving] = useState(false);
 
   useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => setAccountEmail(data.user?.email || ''));
     if (profile?.avatar_path) {
       getImageUrl(profile.avatar_path).then((url) => { if (url) setProfileAvatarUrl(url); });
     }
@@ -67,7 +70,7 @@ export function SettingsScreen({ profile, onClose, onSignOut, onAccountDeleted, 
     if (profile) {
       supabase
         .from('profiles')
-        .select('dashboard_bg_apply_to_chats, dashboard_bg_mode')
+        .select(PROFILE_COLUMNS.settings)
         .eq('id', profile.id)
         .maybeSingle()
         .then(({ data }) => {
@@ -438,7 +441,7 @@ export function SettingsScreen({ profile, onClose, onSignOut, onAccountDeleted, 
               <motion.div key="conta" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-3">
                 <div className="glass clip-hud-sm p-4">
                   <p className="font-mono text-[10px] text-cyber-text-dim">LOGADO COMO</p>
-                  <p className="font-mono text-sm text-cyber-text">{profile.email}</p>
+                  <p className="font-mono text-sm text-cyber-text">{accountEmail}</p>
                 </div>
                 <button onClick={onSignOut} className="clip-hud-sm flex w-full items-center justify-center gap-2 border border-cyber-border px-4 py-3 font-mono text-xs tracking-widest text-cyber-text-dim transition-colors hover:text-cyber-text">
                   <LogOut size={14} /> SAIR DA CONTA

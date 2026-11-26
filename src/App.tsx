@@ -11,6 +11,7 @@ import { forgetAllRoomSecrets, getRoomSecret } from '@/lib/roomKeys';
 import { parseInviteUrl } from '@/lib/cryptoV2';
 import { getJoinToken, panicWipeCrypto } from '@/lib/roomCrypto';
 import type { Screen, UserProfile } from '@/types';
+import { PROFILE_COLUMNS } from '@/lib/columns';
 
 const ChatScreen = lazy(() => import('@/screens/ChatScreen').then((module) => ({ default: module.ChatScreen })));
 const DashboardScreen = lazy(() => import('@/screens/DashboardScreen').then((module) => ({ default: module.DashboardScreen })));
@@ -160,7 +161,7 @@ export default function App() {
         if (s) {
           const { data } = await supabase
             .from('profiles')
-            .select('*')
+            .select(PROFILE_COLUMNS.account)
             .eq('id', s.user.id)
             .maybeSingle();
           if (cancelled) return;
@@ -259,7 +260,7 @@ export default function App() {
   const loadProfile = async (userId: string) => {
     const { data } = await supabase
       .from('profiles')
-      .select('*')
+      .select(PROFILE_COLUMNS.account)
       .eq('id', userId)
       .maybeSingle();
     if (data) {
