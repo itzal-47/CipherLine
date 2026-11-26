@@ -81,6 +81,8 @@ export default function App() {
   const [isGuest, setIsGuest] = useState(false);
   const [suppressScanlines, setSuppressScanlines] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [confirmSignOut, setConfirmSignOut] = useState(false);
+  const signOutCancelRef = useRef<HTMLButtonElement>(null);
   const [pendingQuote, setPendingQuote] = useState<{ text: string; sender: string; roomName: string } | null>(null);
   const [prefilledJoinCode, setPrefilledJoinCode] = useState('');
   const [prefilledJoinSecret, setPrefilledJoinSecret] = useState<string | null>(null);
@@ -90,6 +92,10 @@ export default function App() {
 
   // Toast global para erros de DM / navegação
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (confirmSignOut) signOutCancelRef.current?.focus();
+  }, [confirmSignOut]);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -308,7 +314,10 @@ export default function App() {
 
   const handleAuthSuccess = () => {};
 
-  const handleSignOut = async () => {
+  const handleSignOut = () => setConfirmSignOut(true);
+
+  const confirmAndSignOut = async () => {
+    setConfirmSignOut(false);
     // Limpa estado de chat ANTES de fazer signOut, para que o
     // onAuthStateChange nao dispare com uma sessao de chat "orfa".
     if (chatSession) {
@@ -401,6 +410,7 @@ export default function App() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
+      if (confirmSignOut) return;
       const now = Date.now();
       escPressesRef.current = escPressesRef.current.filter((t) => now - t < 500);
       escPressesRef.current.push(now);
@@ -425,7 +435,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [session]);
+  }, [session, confirmSignOut]);
 
   if (authLoading) {
     return (
@@ -588,6 +598,41 @@ export default function App() {
         )}
       </AnimatePresence>
       </Suspense>
+
+      {confirmSignOut && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/75 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setConfirmSignOut(false); }}>
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="signout-confirm-title"
+            className="glass clip-hud w-full max-w-sm border border-cyber-amber/30 p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))]"
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                setConfirmSignOut(false);
+                return;
+              }
+              if (event.key !== 'Tab') return;
+              const buttons = event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not([disabled])');
+              const first = buttons[0];
+              const last = buttons[buttons.length - 1];
+              if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last?.focus();
+              } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first?.focus();
+              }
+            }}
+          >
+            <h2 id="signout-confirm-title" className="mb-3 font-mono text-lg font-bold text-cyber-amber">Terminar sessão?</h2>
+            <p className="font-mono text-sm leading-relaxed text-cyber-text-dim">Ao terminar sessão, as chaves das salas cifradas deste dispositivo são apagadas. Só voltas a entrar nelas com o link de convite.</p>
+            <div className="mt-5 flex gap-3">
+              <button ref={signOutCancelRef} onClick={() => setConfirmSignOut(false)} className="min-h-11 flex-1 border border-cyber-border px-3 py-2 font-mono text-sm text-cyber-text hover:bg-cyber-panel/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyber-cyan/60">Cancelar</button>
+              <button onClick={confirmAndSignOut} className="min-h-11 flex-1 border border-cyber-amber/40 bg-cyber-amber/10 px-3 py-2 font-mono text-sm text-cyber-amber hover:bg-cyber-amber/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyber-amber/60">Terminar sessão</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Toast global — erros de navegação / DM */}
       <AnimatePresence>

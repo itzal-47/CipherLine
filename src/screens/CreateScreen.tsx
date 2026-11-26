@@ -10,8 +10,8 @@ import { Typewriter } from '@/components/Typewriter';
 import type { BurnConfig } from '@/types';
 import { CRYPTO_V2_CREATE } from '@/lib/flags';
 import { generateRoomSecret } from '@/lib/cryptoV2';
-import { saveRoomSecret } from '@/lib/roomKeys';
-import { buildInviteUrl } from '@/lib/cryptoV2';
+import { getRoomSecret, saveRoomSecret } from '@/lib/roomKeys';
+import { InviteSheet } from '@/components/InviteSheet';
 import { getJoinToken } from '@/lib/roomCrypto';
 
 interface CreateScreenProps {
@@ -44,7 +44,8 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
   const [customCode, setCustomCode] = useState('');
   const [codeStatus, setCodeStatus] = useState<'idle' | 'checking' | 'available' | 'taken'>('idle');
   const [roomCode, setRoomCode] = useState('');
-  const [inviteUrl, setInviteUrl] = useState('');
+  const [showInvite, setShowInvite] = useState(false);
+  const [createdCryptoVersion, setCreatedCryptoVersion] = useState<1 | 2>(1);
   const [, setParticipantId] = useState('');
   const [status, setStatus] = useState('INICIALIZANDO CANAL SEGURO...');
   const [error, setError] = useState('');
@@ -96,8 +97,9 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
     const isPermanent = isGuest ? false : duration === 'permanent';
     const burnConfig: BurnConfig = { mode: 'off', seconds: 0 };
     const isPublic = visibility === 'public';
-    const cryptoVersion: 1 | 2 = CRYPTO_V2_CREATE ? 2 : 1;
-    const secret = CRYPTO_V2_CREATE ? generateRoomSecret() : null;
+    const cryptoVersion: 1 | 2 = !isPublic && CRYPTO_V2_CREATE ? 2 : 1;
+    const secret = cryptoVersion === 2 ? generateRoomSecret() : null;
+    setCreatedCryptoVersion(cryptoVersion);
     const joinToken = secret ? await getJoinToken(code, secret) : null;
 
     setRoomCode(code);
@@ -136,7 +138,6 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
     saveParticipantCreds(code, userNickname || nickname, joined.participantId, joined.secret);
     if (secret) {
       saveRoomSecret(code, secret);
-      setInviteUrl(buildInviteUrl(window.location.origin, code, secret));
     }
     setParticipantId(joined.participantId);
     setStatus('AGUARDANDO PARTICIPANTES...');
@@ -178,13 +179,26 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
               CÓDIGO DO CANAL
             </div>
             <div className="mb-4 flex items-center justify-center gap-3">
-              <h2 className={`font-mono font-bold text-cyber-green glow-green ${inviteUrl ? 'break-all text-xs tracking-normal' : 'text-4xl tracking-[0.2em] sm:text-5xl'}`}>
-                {inviteUrl || roomCode}
+              <h2 className="break-all font-mono text-4xl font-bold tracking-[0.12em] text-cyber-green glow-green sm:text-5xl" translate="no">
+                {roomCode}
               </h2>
             </div>
-            <div className="flex items-center justify-center">
-              <CopyButton text={inviteUrl || roomCode} label={inviteUrl ? 'COPIAR LINK DE CONVITE' : 'COPIAR CÓDIGO'} />
-            </div>
+            {createdCryptoVersion === 2 ? (
+              <>
+                <div className="mb-4 inline-flex min-h-8 items-center gap-2 rounded border border-cyber-green/30 bg-cyber-green/10 px-3 font-mono text-xs text-cyber-green">
+                  <Lock size={14} aria-hidden="true" /> Sala cifrada
+                </div>
+                <button
+                  onClick={() => setShowInvite(true)}
+                  className="clip-hud-sm mt-4 min-h-12 w-full border border-cyber-green/40 bg-cyber-green/10 px-5 py-3 font-mono text-sm font-bold tracking-widest text-cyber-green transition-colors hover:bg-cyber-green/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyber-green/60"
+                >
+                  CONVIDAR
+                </button>
+                <p className="mt-3 font-mono text-xs leading-relaxed text-cyber-text-dim">As pessoas com o convite podem ler o histórico. Neste dispositivo, o segredo fica guardado para voltar a abrir a sala.</p>
+              </>
+            ) : (
+              <CopyButton text={roomCode} label="COPIAR CÓDIGO" />
+            )}
             {duration === 'permanent' && !isGuest && (
               <div className="mt-3 font-mono text-[10px] tracking-widest text-cyber-cyan/50">
                 [ SALA PERMANENTE ]
@@ -225,9 +239,13 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
               transition={{ delay: 1 }}
               className="mt-4 font-mono text-xs tracking-widest text-cyber-text-faint"
             >
-              COMPARTILHE O CÓDIGO COM SEU CONTATO
+              {createdCryptoVersion === 2 ? 'ENVIA O CONVITE (LINK OU QR) AO TEU CONTATO' : 'COMPARTILHE O CÓDIGO COM SEU CONTATO'}
             </motion.div>
           </motion.div>
+
+          {showInvite && createdCryptoVersion === 2 && getRoomSecret(roomCode) && (
+            <InviteSheet roomCode={roomCode} secret={getRoomSecret(roomCode)!} onClose={() => setShowInvite(false)} />
+          )}
         </motion.div>
       </div>
     );
@@ -400,14 +418,17 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
               </button>
             </div>
             {visibility === 'public' && (
-              <input
-                type="text"
-                value={topic}
-                onChange={(e) => setTopic(e.target.value)}
-                maxLength={100}
-                placeholder="Tópico/descrição do canal (opcional)"
-                className="mt-3 w-full bg-transparent font-mono text-sm text-cyber-cyan placeholder-cyber-text-faint focus:outline-none"
-              />
+              <>
+                <p className="mt-3 rounded border border-cyber-amber/30 bg-cyber-amber/5 p-3 font-mono text-xs leading-relaxed text-cyber-amber">Canais públicos não são privados: qualquer conta pode ler as mensagens.</p>
+                <input
+                  type="text"
+                  value={topic}
+                  onChange={(e) => setTopic(e.target.value)}
+                  maxLength={100}
+                  placeholder="Tópico/descrição do canal (opcional)"
+                  className="mt-3 w-full bg-transparent font-mono text-sm text-cyber-cyan placeholder-cyber-text-faint focus:outline-none"
+                />
+              </>
             )}
           </div>
         )}
