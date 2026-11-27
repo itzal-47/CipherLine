@@ -7,7 +7,8 @@ import { getDeviceId, getHiddenMessageIds, hideMessageLocally } from '@/lib/devi
 import { requestNotificationPermission, subscribeToPush, unsubscribeFromPush } from '@/lib/push';
 import { uploadEncryptedAudio, uploadEncryptedImage, uploadBackgroundImage, getImageUrl, deleteStorageFile } from '@/lib/media';
 import { insertMessageSecure, deleteMessageSecure, reactSecure, unreactSecure, markReadSecure, updatePresenceSecure, upsertPasteSecure, updateRoomSecure, updateParticipantProfileSecure, updateRoomBurnConfigSecure, leaveRoomSecure, insertAiReplySecure, deleteParticipantCompletelySecure, togglePinMessageSecure, votePollSecure } from '@/lib/participant';
-import { PARTICIPANT_COLUMNS, PROFILE_COLUMNS } from '@/lib/columns';
+import { PROFILE_COLUMNS } from '@/lib/columns';
+import { countParticipants, fetchParticipantBrief, fetchParticipantShowProfile, fetchParticipantUserId, fetchParticipants, fetchPaste, fetchRoomMediaPaths, fetchRoomSnapshot, subscribeRoomEvents, type RoomEventsUnsubscribe } from '@/lib/roomData';
 import { StatusDot } from '@/components/StatusDot';
 import { CopyButton } from '@/components/CopyButton';
 import { Typewriter } from '@/components/Typewriter';
@@ -148,11 +149,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
   const [replyTo, setReplyTo] = useState<DecodedMessage | null>(null);
 
   const webrtcChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
-  const chatChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
-  const presenceChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
-  const reactionChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
-  const receiptChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
-  const pasteChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const roomDataUnsubscribeRef = useRef<RoomEventsUnsubscribe | null>(null);
   const typingChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const typingDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -199,15 +196,9 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
       }
       setIsOwner(data?.owner_id === userId);
     });
-    if (userId) { supabase.from('participants').select(PARTICIPANT_COLUMNS.showProfile).eq('id', participantId).maybeSingle().then(({ data }) => { setEditShowProfile(data?.show_profile || false); }); }
+    if (userId) { fetchParticipantShowProfile(participantId).then(({ data }) => { setEditShowProfile(data?.show_profile || false); }); }
 
-    pasteChannelRef.current = supabase.channel(`paste-${roomId}`).on('postgres_changes', { event: '*', schema: 'public', table: 'room_pastes', filter: `room_id=eq.${roomId}` }, async (payload: any) => {
-        if (pasteTextareaFocusedRef.current) return;
-        const encrypted = payload.new?.encrypted_content;
-        if (encrypted) { const plain = await rc.decryptText(encrypted, { messageId: roomId, type: 'paste' }); if (plain !== DECRYPT_FAILED && plain !== NO_KEY) setPasteContent(plain); }
-      }).subscribe();
-
-    setupRealtime(); setupPresence(); updateLastSeen();
+    setupRealtime(); updateLastSeen();
     presenceIntervalRef.current = setInterval(updateLastSeen, PRESENCE_INTERVAL);
     presenceCheckRef.current = setInterval(checkOnlineStatus, PRESENCE_CHECK_INTERVAL);
 
@@ -215,10 +206,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
     const handleOnline = () => {
       if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
       setConnectionStatus('reconnecting');
-      if (chatChannelRef.current) supabase.removeChannel(chatChannelRef.current);
-      if (reactionChannelRef.current) supabase.removeChannel(reactionChannelRef.current);
-      if (receiptChannelRef.current) supabase.removeChannel(receiptChannelRef.current);
-      setupRealtime();
+      roomDataUnsubscribeRef.current?.reconnectChat();
     };
     window.addEventListener('offline', handleOffline); window.addEventListener('online', handleOnline);
 
@@ -230,19 +218,15 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
       if (pasteSaveTimerRef.current) clearTimeout(pasteSaveTimerRef.current);
       typingTimeoutsRef.current.forEach((t) => clearTimeout(t));
       window.removeEventListener('offline', handleOffline); window.removeEventListener('online', handleOnline);
-      if (chatChannelRef.current) supabase.removeChannel(chatChannelRef.current);
-      if (presenceChannelRef.current) supabase.removeChannel(presenceChannelRef.current);
+      roomDataUnsubscribeRef.current?.();
       if (typingChannelRef.current) supabase.removeChannel(typingChannelRef.current);
-      if (reactionChannelRef.current) supabase.removeChannel(reactionChannelRef.current);
-      if (receiptChannelRef.current) supabase.removeChannel(receiptChannelRef.current);
-      if (pasteChannelRef.current) supabase.removeChannel(pasteChannelRef.current);
       if (webrtcChannelRef.current) supabase.removeChannel(webrtcChannelRef.current);
-      chatChannelRef.current = null; presenceChannelRef.current = null; typingChannelRef.current = null; reactionChannelRef.current = null; receiptChannelRef.current = null; pasteChannelRef.current = null; webrtcChannelRef.current = null;
+      roomDataUnsubscribeRef.current = null; typingChannelRef.current = null; webrtcChannelRef.current = null;
       unsubscribeFromPush(participantId).catch(() => {});
     };
   }, [roomId, userId, cryptoVersion, rc]);
 
-  const loadPaste = async () => { const { data } = await supabase.from('room_pastes').select('encrypted_content').eq('room_id', roomId).maybeSingle(); if (data?.encrypted_content) { const plain = await rc.decryptText(data.encrypted_content, { messageId: roomId, type: 'paste' }); setPasteContent(plain === DECRYPT_FAILED || plain === NO_KEY ? '' : plain); } };
+  const loadPaste = async () => { const encrypted = await fetchPaste(roomId); if (encrypted) { const plain = await rc.decryptText(encrypted, { messageId: roomId, type: 'paste' }); setPasteContent(plain === DECRYPT_FAILED || plain === NO_KEY ? '' : plain); } };
   const savePaste = async (content: string) => { setPasteSaving(true); try { const encrypted = await rc.encryptText(content, { messageId: roomId, type: 'paste' }); await upsertPasteSecure(roomId, participantId, participantSecret, encrypted); } finally { setPasteSaving(false); } };
   const handlePasteChange = (value: string) => { setPasteContent(value); if (pasteSaveTimerRef.current) clearTimeout(pasteSaveTimerRef.current); pasteSaveTimerRef.current = setTimeout(() => savePaste(value), 800); };
 
@@ -329,24 +313,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
 
   const loadInitialData = async () => {
     try {
-      const [{ data: existingMsgs }, { data: parts }] = await Promise.all([
-        supabase.from('messages').select('*').eq('room_id', roomId).order('created_at', { ascending: false }).limit(100),
-        supabase.from('participants').select(PARTICIPANT_COLUMNS.room).eq('room_id', roomId),
-      ]);
-
-      // Buscar reactions e receipts apenas das mensagens carregadas, em vez de
-      // toda a tabela (antes era SELECT * em reactions/read_receipts globais).
-      const msgIds = (existingMsgs ?? []).map((m) => m.id);
-      let reactions: any[] = [];
-      let receipts: any[] = [];
-      if (msgIds.length > 0) {
-        const [rxRes, rrRes] = await Promise.all([
-          supabase.from('reactions').select('*').in('message_id', msgIds),
-          supabase.from('read_receipts').select('*').in('message_id', msgIds),
-        ]);
-        reactions = rxRes.data ?? [];
-        receipts = rrRes.data ?? [];
-      }
+      const { messages: existingMsgs, participants: parts, reactions, receipts } = await fetchRoomSnapshot(roomId);
 
       if (parts) {
         setAllParticipants(parts);
@@ -431,86 +398,83 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
   const BACKOFF_STEPS = [1000, 2000, 5000, 10000, 15000];
   const scheduleReconnect = () => {
     if (reconnectTimerRef.current) return; const delay = BACKOFF_STEPS[Math.min(reconnectAttemptRef.current, BACKOFF_STEPS.length - 1)]; reconnectAttemptRef.current += 1;
-    reconnectTimerRef.current = setTimeout(() => { reconnectTimerRef.current = null; if (chatChannelRef.current) supabase.removeChannel(chatChannelRef.current); if (reactionChannelRef.current) supabase.removeChannel(reactionChannelRef.current); if (receiptChannelRef.current) supabase.removeChannel(receiptChannelRef.current); setupRealtime(); }, delay);
+    reconnectTimerRef.current = setTimeout(() => { reconnectTimerRef.current = null; roomDataUnsubscribeRef.current?.reconnectChat(); }, delay);
   };
 
   const setupRealtime = () => {
-    const channel = supabase.channel(`chat-${roomId}`);
-    channel.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `room_id=eq.${roomId}` }, async (payload) => {
-        const msg = payload.new as any; if (msg.sender_id === participantId) return;
-        const decrypted = await rc.decryptText(msg.encrypted_content, { messageId: msg.id, type: msg.message_type || 'text' }); const plaintext = decrypted === NO_KEY ? DECRYPT_FAILED : decrypted; const { data: sender } = await supabase.from('participants').select(PARTICIPANT_COLUMNS.sender).eq('id', msg.sender_id).maybeSingle();
+    roomDataUnsubscribeRef.current = subscribeRoomEvents(roomId, {
+      onPasteChange: async (payload) => {
+        if (pasteTextareaFocusedRef.current) return;
+        const encrypted = payload.new?.encrypted_content;
+        if (encrypted) { const plain = await rc.decryptText(encrypted, { messageId: roomId, type: 'paste' }); if (plain !== DECRYPT_FAILED && plain !== NO_KEY) setPasteContent(plain); }
+      },
+      onMessageInsert: async (message) => {
+        const msg = message; if (msg.sender_id === participantId) return;
+        const decrypted = await rc.decryptText(msg.encrypted_content, { messageId: msg.id, type: msg.message_type || 'text' }); const plaintext = decrypted === NO_KEY ? DECRYPT_FAILED : decrypted; const { data: sender } = await fetchParticipantBrief(msg.sender_id);
         let senderDisplayName: string | null = null, senderAvatarUrl: string | null = null;
         if (sender?.show_profile && sender?.user_id) { const { data: pr } = await supabase.from('profiles').select(PROFILE_COLUMNS.sender).eq('id', sender.user_id).maybeSingle(); senderDisplayName = pr?.display_name || null; senderAvatarUrl = pr?.avatar_path ? await getImageUrl(pr.avatar_path) : null; }
         const msgBurn = msg.burn_config ? jsonToBurnConfig(msg.burn_config) : null;
-        if (!focusMode) playReceiveSound(); 
+        if (!focusMode) playReceiveSound();
         setPulseKey((k) => k + 1); vibrate(60); setSystemMessage('NOVA TRANSMISSÃO RECEBIDA'); setTimeout(() => setSystemMessage(''), 2000);
-        
         let pollData = null;
-        if (msg.message_type === 'poll') {
-          try { pollData = mergePollData(JSON.parse(plaintext) as PollData, msg.poll_data); } catch {}
-        }
-
+        if (msg.message_type === 'poll') { try { pollData = mergePollData(JSON.parse(plaintext) as PollData, msg.poll_data); } catch {} }
         setMessages((prev) => {
           if (prev.some((m) => m.id === msg.id)) return prev;
           const replySource = msg.reply_to_message_id ? prev.find((m) => m.id === msg.reply_to_message_id) : null;
-          return [...prev, { 
-            id: msg.id, senderId: msg.sender_id, senderNickname: sender?.nickname || 'UNKNOWN', senderDisplayName, senderAvatarUrl, 
-            encryptedContent: msg.encrypted_content, plaintext: msg.message_type === 'poll' ? '' : plaintext, createdAt: msg.created_at, isOwn: false, 
-            state: 'decoded', destroyAt: msgBurn && msgBurn.seconds > 0 ? new Date(msg.created_at).getTime() + (msgBurn.seconds * 1000) : null, 
-            burnConfig: msgBurn, reactions: [], readBy: [], messageType: (msg.message_type as MessageType) || 'text', storagePath: msg.storage_path || null, 
-            durationSeconds: msg.duration_seconds || null, replyToMessageId: msg.reply_to_message_id || null, replyToSenderNickname: replySource?.senderNickname || null, 
-            replyToPlaintext: replySource?.plaintext?.slice(0, 80) || null, capsuleUnlockAt: msg.capsule_unlock_at || null, targetParticipantId: msg.target_participant_id || null, 
+          return [...prev, {
+            id: msg.id, senderId: msg.sender_id, senderNickname: sender?.nickname || 'UNKNOWN', senderDisplayName, senderAvatarUrl,
+            encryptedContent: msg.encrypted_content, plaintext: msg.message_type === 'poll' ? '' : plaintext, createdAt: msg.created_at, isOwn: false,
+            state: 'decoded', destroyAt: msgBurn && msgBurn.seconds > 0 ? new Date(msg.created_at).getTime() + (msgBurn.seconds * 1000) : null,
+            burnConfig: msgBurn, reactions: [], readBy: [], messageType: (msg.message_type as MessageType) || 'text', storagePath: msg.storage_path || null,
+            durationSeconds: msg.duration_seconds || null, replyToMessageId: msg.reply_to_message_id || null, replyToSenderNickname: replySource?.senderNickname || null,
+            replyToPlaintext: replySource?.plaintext?.slice(0, 80) || null, capsuleUnlockAt: msg.capsule_unlock_at || null, targetParticipantId: msg.target_participant_id || null,
             isPinned: msg.is_pinned || false, pollData, burnAfterListen: msg.burn_after_listen || false, fileName: msg.file_name || null,
             aiGenerated: msg.ai_generated || false, aiContextIncluded: msg.ai_context_included || false
           }];
         });
-        // A marcacao como lido agora e feita pelo efeito de "active viewing"
-        // (autoScroll + visivel + interagiu). Antes era incondicional aqui,
-        // o que impedia unreadCount de crescer.
-      })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: `room_id=eq.${roomId}` }, (payload) => {
-        const msg = payload.new as any;
+        // A marcacao como lido agora e feita pelo efeito de "active viewing" (autoScroll + visivel + ja interagiu).
+      },
+      onMessageUpdate: (message) => {
+        const msg = message;
         setMessages(prev => prev.map(x => x.id === msg.id ? { ...x, isPinned: msg.is_pinned || false, pollData: x.messageType === 'poll' && x.pollData ? mergePollData(x.pollData, msg.poll_data) : x.pollData } : (msg.is_pinned ? { ...x, isPinned: false } : x)));
-      })
-      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages', filter: `room_id=eq.${roomId}` }, (payload) => { const msg = payload.old as any; setMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, state: 'destroyed' as const } : m))); })
-      .subscribe((status) => {
+      },
+      onMessageDelete: (oldMessage) => { setMessages((prev) => prev.map((m) => (m.id === oldMessage.id ? { ...m, state: 'destroyed' as const } : m))); },
+      onReactionInsert: (reaction) => { const r = reaction as Reaction; setMessages((prev) => prev.map((m) => m.id === r.message_id ? { ...m, reactions: [...m.reactions.filter((x) => x.id !== r.id), r] } : m)); },
+      onReactionDelete: (oldReaction) => { const r = oldReaction as Reaction; if (!r?.id) return; setMessages((prev) => prev.map((m) => m.reactions.some((x) => x.id === r.id) ? { ...m, reactions: m.reactions.filter((x) => x.id !== r.id) } : m)); },
+      // Dedupe por id E por participant_id. Antes so filtrava por id, o que deixava receipts temporarios locais ("temp-<uuid>") duplicados ao lado dos reais recebidos pelo realtime.
+      onReceiptInsert: (receipt) => { const r = receipt as ReadReceipt; setMessages((prev) => prev.map((m) => m.id === r.message_id ? { ...m, readBy: [...m.readBy.filter((x) => x.id !== r.id && x.participant_id !== r.participant_id), r] } : m)); },
+      onParticipantInsert: (participant) => {
+        const p = participant; if (p.id === participantId) return;
+        setPeers((prev) => prev.find((x) => x.id === p.id) ? prev : [...prev, p]); setAllParticipants((prev) => prev.find((x) => x.id === p.id) ? prev : [...prev, p]);
+        setOnlinePeerIds((prev) => new Set(prev).add(p.id)); setSystemMessage(`${p.nickname.toUpperCase()} CONECTADO`); setTimeout(() => setSystemMessage(''), 3000);
+      },
+      onParticipantDelete: (oldParticipant) => {
+        const p = oldParticipant; if (p.id === participantId) return;
+        setPeers((prev) => prev.filter((x) => x.id !== p.id)); setAllParticipants((prev) => prev.filter((x) => x.id !== p.id));
+        setOnlinePeerIds((prev) => { const next = new Set(prev); if (p.id) next.delete(p.id); return next; }); setSystemMessage(`${p.nickname?.toUpperCase() || 'PARTICIPANTE'} DESCONECTADO`); setTimeout(() => setSystemMessage(''), 3000);
+      },
+      onParticipantUpdate: (participant) => {
+        const p = participant; if (p.id === participantId) return;
+        setPeers((prev) => prev.map((x) => (x.id === p.id ? p : x))); setAllParticipants((prev) => prev.map((x) => (x.id === p.id ? p : x)));
+      },
+      onStatus: (status) => {
         if (status === 'SUBSCRIBED') {
-          chatChannelRef.current = channel; 
           if (connectionGraceTimerRef.current) { clearTimeout(connectionGraceTimerRef.current); connectionGraceTimerRef.current = null; }
-          const wasReconnecting = reconnectAttemptRef.current > 0; 
-          reconnectAttemptRef.current = 0; 
-          setConnectionStatus('connected'); 
+          const wasReconnecting = reconnectAttemptRef.current > 0;
+          reconnectAttemptRef.current = 0;
+          setConnectionStatus('connected');
           if (wasReconnecting) loadInitialData();
         } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
           // REMOVIDO: supabase.removeChannel(channel) que causava o loop.
-          if (!connectionGraceTimerRef.current) { connectionGraceTimerRef.current = setTimeout(() => { connectionGraceTimerRef.current = null; setConnectionStatus('reconnecting'); }, 4000); } 
+          if (!connectionGraceTimerRef.current) { connectionGraceTimerRef.current = setTimeout(() => { connectionGraceTimerRef.current = null; setConnectionStatus('reconnecting'); }, 4000); }
           scheduleReconnect();
         }
-      });
-    reactionChannelRef.current = supabase.channel(`reactions-${roomId}`).on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'reactions' }, (payload) => { const r = payload.new as any; setMessages((prev) => prev.map((m) => m.id === r.message_id ? { ...m, reactions: [...m.reactions.filter((x) => x.id !== r.id), r as Reaction] } : m)); }).on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'reactions' }, (payload) => { const r = payload.old as any; if (!r?.id) return; setMessages((prev) => prev.map((m) => m.reactions.some((x) => x.id === r.id) ? { ...m, reactions: m.reactions.filter((x) => x.id !== r.id) } : m)); }).subscribe();
-    // Dedupe por id E por participant_id. Antes so filtrava por id, o que
-    // deixava receipts temporarios locais ("temp-<uuid>") duplicados ao lado
-    // dos reais recebidos pelo realtime.
-    receiptChannelRef.current = supabase.channel(`receipts-${roomId}`).on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'read_receipts' }, (payload) => { const r = payload.new as any; setMessages((prev) => prev.map((m) => m.id === r.message_id ? { ...m, readBy: [...m.readBy.filter((x) => x.id !== r.id && x.participant_id !== r.participant_id), r as ReadReceipt] } : m)); }).subscribe();
-  };
-
-  const setupPresence = () => {
-    presenceChannelRef.current = supabase.channel(`presence-${roomId}`).on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'participants', filter: `room_id=eq.${roomId}` }, async (payload) => {
-          const p = payload.new as any; if (p.id === participantId) return;
-          setPeers((prev) => prev.find((x) => x.id === p.id) ? prev : [...prev, p]); setAllParticipants((prev) => prev.find((x) => x.id === p.id) ? prev : [...prev, p]);
-          setOnlinePeerIds((prev) => new Set(prev).add(p.id)); setSystemMessage(`${p.nickname.toUpperCase()} CONECTADO`); setTimeout(() => setSystemMessage(''), 3000);
-      }).on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'participants', filter: `room_id=eq.${roomId}` }, (payload) => {
-          const p = payload.old as any; if (p.id === participantId) return;
-          setPeers((prev) => prev.filter((x) => x.id !== p.id)); setAllParticipants((prev) => prev.filter((x) => x.id !== p.id));
-          setOnlinePeerIds((prev) => { const next = new Set(prev); next.delete(p.id); return next; }); setSystemMessage(`${p.nickname?.toUpperCase() || 'PARTICIPANTE'} DESCONECTADO`); setTimeout(() => setSystemMessage(''), 3000);
-      }).on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'participants', filter: `room_id=eq.${roomId}` }, (payload) => {
-          const p = payload.new as any; if (p.id === participantId) return;
-          setPeers((prev) => prev.map((x) => (x.id === p.id ? p : x))); setAllParticipants((prev) => prev.map((x) => (x.id === p.id ? p : x)));
-      }).subscribe();
+      },
+    });
   };
 
   const reconcileParticipants = async () => {
-    const { data } = await supabase.from('participants').select(PARTICIPANT_COLUMNS.room).eq('room_id', roomId); if (!data) return;
+    const { data } = await fetchParticipants(roomId); if (!data) return;
     setPeers((prev) => { const known = new Set(prev.map((p) => p.id)); const fresh = data.filter((p) => p.id !== participantId); fresh.filter((p) => !known.has(p.id)).forEach((p) => { setSystemMessage(`${p.nickname?.toUpperCase() || 'PARTICIPANTE'} CONECTADO`); setTimeout(() => setSystemMessage(''), 3000); }); return fresh; });
     setAllParticipants(data);
   };
@@ -766,7 +730,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
 
   const handleReplyPrivate = async (message: DecodedMessage) => {
     if (!userId) { setSystemMessage('PRECISA DE CONTA PARA CONVERSAS PRIVADAS'); setTimeout(() => setSystemMessage(''), 3000); return; }
-    const { data: senderParticipant } = await supabase.from('participants').select(PARTICIPANT_COLUMNS.user).eq('id', message.senderId).maybeSingle();
+    const { data: senderParticipant } = await fetchParticipantUserId(message.senderId);
     if (!senderParticipant?.user_id) { setSystemMessage('ESSA PESSOA ESTÁ SEM CONTA'); setTimeout(() => setSystemMessage(''), 4000); return; }
     if (senderParticipant.user_id === userId) { setSystemMessage('ESSA MENSAGEM É SUA'); setTimeout(() => setSystemMessage(''), 3000); return; }
     try {
@@ -866,7 +830,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
   };
   const handleSairDefinitivamente = async () => {
     await unsubscribeFromPush(participantId).catch(() => {}); try { await deleteParticipantCompletelySecure(participantId, participantSecret); } catch {}
-    if (!isPermanent) { const { count } = await supabase.from('participants').select(PARTICIPANT_COLUMNS.identity, { count: 'exact', head: true }).eq('room_id', roomId); if (count === 0) { const { data: mediaMsgs } = await supabase.from('messages').select('storage_path').eq('room_id', roomId).not('storage_path', 'is', null); if (mediaMsgs && mediaMsgs.length > 0) { const paths = mediaMsgs.map((m) => m.storage_path).filter(Boolean) as string[]; await supabase.storage.from('cipherline-media').remove(paths); } } }
+    if (!isPermanent) { const { count } = await countParticipants(roomId); if (count === 0) { const { data: mediaMsgs } = await fetchRoomMediaPaths(roomId); if (mediaMsgs && mediaMsgs.length > 0) { const paths = mediaMsgs.map((m) => m.storage_path).filter(Boolean) as string[]; await supabase.storage.from('cipherline-media').remove(paths); } } }
     onLeave();
   };
 
