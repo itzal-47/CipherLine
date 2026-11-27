@@ -323,7 +323,7 @@ export function ChatMessage({ message, rc, participantId, isOwner, onDestroy, on
             className={`clip-hud-sm relative min-w-0 overflow-hidden border px-4 py-3 cursor-pointer ${message.isOwn ? 'border-cyber-green/20 bg-cyber-green/5' : isWhisper ? 'border-cyber-magenta/30 bg-cyber-magenta/5' : isPoll ? 'border-cyber-cyan/40 bg-cyber-cyan/10' : 'border-cyber-cyan/20 bg-cyber-cyan/5'}`}
           >
             {message.isPinned && <Pin size={12} className="absolute top-2 right-2 text-cyber-amber" />}
-            {message.aiGenerated && <div className="mb-2 font-mono text-[9px] tracking-widest text-cyber-magenta">GERADA POR IA</div>}
+            {message.aiGenerated && <div className="mb-2 font-mono text-[9px] tracking-widest text-cyber-magenta">EIVORAK · PEDIDO POR {message.senderNickname}{message.aiContextIncluded ? ' · COM CONTEXTO DA CONVERSA' : ''}</div>}
             {message.state === 'decoded' && message.replyToMessageId && message.replyToSenderNickname && (
               <button onClick={(e) => { e.stopPropagation(); onScrollToMessage(message.replyToMessageId!); }} className="mb-2 w-full border-l-2 border-cyber-cyan/40 bg-cyber-cyan/5 px-3 py-1.5 text-left transition-colors hover:bg-cyber-cyan/10">
                 <div className="font-mono text-[10px] tracking-widest text-cyber-cyan/60">{message.replyToSenderNickname}</div>
