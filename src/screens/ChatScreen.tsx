@@ -6,7 +6,7 @@ import { playSendSound, playReceiveSound } from '@/lib/audio';
 import { getDeviceId, getHiddenMessageIds, hideMessageLocally } from '@/lib/device';
 import { requestNotificationPermission, subscribeToPush, unsubscribeFromPush } from '@/lib/push';
 import { uploadEncryptedAudio, uploadEncryptedImage, uploadBackgroundImage, getImageUrl, deleteStorageFile } from '@/lib/media';
-import { insertMessageSecure, deleteMessageSecure, reactSecure, unreactSecure, markReadSecure, updatePresenceSecure, upsertPasteSecure, updateRoomSecure, updateParticipantProfileSecure, updateRoomBurnConfigSecure, leaveRoomSecure, insertEivorakReplySecure, deleteParticipantCompletelySecure, togglePinMessageSecure, votePollSecure } from '@/lib/participant';
+import { insertMessageSecure, deleteMessageSecure, reactSecure, unreactSecure, markReadSecure, updatePresenceSecure, upsertPasteSecure, updateRoomSecure, updateParticipantProfileSecure, updateRoomBurnConfigSecure, leaveRoomSecure, insertAiReplySecure, deleteParticipantCompletelySecure, togglePinMessageSecure, votePollSecure } from '@/lib/participant';
 import { PARTICIPANT_COLUMNS, PROFILE_COLUMNS } from '@/lib/columns';
 import { StatusDot } from '@/components/StatusDot';
 import { CopyButton } from '@/components/CopyButton';
@@ -25,6 +25,9 @@ import { buildServerPollData, mergePollData } from '@/lib/pollData';
 import { DECRYPT_FAILED, NO_KEY } from '@/lib/cryptoV2';
 import { getRoomSecret } from '@/lib/roomKeys';
 import { InviteSheet } from '@/components/InviteSheet';
+import { AiConsentDialog } from '@/components/AiConsentDialog';
+import { hasAiConsent, grantAiConsent } from '@/lib/aiConsent';
+import { buildRecentContext } from '@/lib/eivorakContext';
 
 const CallScreen = lazy(() => import('@/components/CallScreen').then(m => ({ default: m.CallScreen })));
 const GroupCallScreen = lazy(() => import('@/components/GroupCallScreen').then(m => ({ default: m.GroupCallScreen })));
@@ -117,6 +120,9 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
   const pasteSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showCapsuleComposer, setShowCapsuleComposer] = useState(false);
   const [showEivorakMenu, setShowEivorakMenu] = useState(false);
+  const [includeRecentContext, setIncludeRecentContext] = useState(false);
+  const [showAiConsent, setShowAiConsent] = useState(false);
+  const consentResolverRef = useRef<((granted: boolean) => void) | null>(null);
   const [showChannelSettings, setShowChannelSettings] = useState(false);
   const [editRoomName, setEditRoomName] = useState('');
   const [editIsPublic, setEditIsPublic] = useState(false);
@@ -160,6 +166,19 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
   const presenceIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const presenceCheckRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const deviceIdRef = useRef<string>(getDeviceId());
+
+  const requireAiConsent = useCallback((): Promise<boolean> => {
+    if (hasAiConsent()) return Promise.resolve(true);
+    if (consentResolverRef.current) return Promise.resolve(false);
+    setShowAiConsent(true);
+    return new Promise((resolve) => { consentResolverRef.current = resolve; });
+  }, []);
+  const resolveAiConsent = useCallback((granted: boolean) => {
+    if (granted) grantAiConsent();
+    setShowAiConsent(false);
+    consentResolverRef.current?.(granted);
+    consentResolverRef.current = null;
+  }, []);
 
   useEffect(() => {
     if (cryptoVersion === 2 && !rc.hasKey) return;
@@ -388,6 +407,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
             replyToSenderNickname: replyInfo?.senderNickname || null, replyToPlaintext: replyInfo?.plaintext?.slice(0, 80) || null, capsuleUnlockAt: msg.capsule_unlock_at || null,
             targetParticipantId: msg.target_participant_id || null, isPinned: msg.is_pinned || false,
             pollData, burnAfterListen: msg.burn_after_listen || false, fileName: msg.file_name || null,
+            aiGenerated: msg.ai_generated || false, aiContextIncluded: msg.ai_context_included || false,
           } as DecodedMessage;
         }));
 
@@ -438,7 +458,8 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
             burnConfig: msgBurn, reactions: [], readBy: [], messageType: (msg.message_type as MessageType) || 'text', storagePath: msg.storage_path || null, 
             durationSeconds: msg.duration_seconds || null, replyToMessageId: msg.reply_to_message_id || null, replyToSenderNickname: replySource?.senderNickname || null, 
             replyToPlaintext: replySource?.plaintext?.slice(0, 80) || null, capsuleUnlockAt: msg.capsule_unlock_at || null, targetParticipantId: msg.target_participant_id || null, 
-            isPinned: msg.is_pinned || false, pollData, burnAfterListen: msg.burn_after_listen || false, fileName: msg.file_name || null
+            isPinned: msg.is_pinned || false, pollData, burnAfterListen: msg.burn_after_listen || false, fileName: msg.file_name || null,
+            aiGenerated: msg.ai_generated || false, aiContextIncluded: msg.ai_context_included || false
           }];
         });
         // A marcacao como lido agora e feita pelo efeito de "active viewing"
@@ -556,10 +577,11 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
 
   const handleRecap = async () => {
     if (isRecaping) return;
+    if (!await requireAiConsent()) return;
     setIsRecaping(true);
     try {
       const unread = messages.filter(m => !m.isOwn && !m.readBy.some(r => r.participant_id === participantId));
-      const contextText = unread.map(m => `${m.senderNickname}: ${m.plaintext}`).join('\n');
+      const contextText = buildRecentContext(unread, includeRecentContext);
       
       const { data, error } = await supabase.functions.invoke('eivorak-agent', {
         body: { 
@@ -637,7 +659,8 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
 
   const triggerEivorak = async (userMessage: string, repliedTo: DecodedMessage | null) => {
     try {
-      setEivorakThinking(true); const recentContext = messages.slice(-10).map((m) => `${m.senderNickname}: ${m.plaintext}`).join('\n'); const urlMatch = userMessage.match(/https?:\/\/[^\s]+/i); const cleanMessage = userMessage.replace(/@eivorak\b/i, '').trim() || userMessage; let imageUrl: string | null = null;
+      if (!await requireAiConsent()) return;
+      setEivorakThinking(true); const recentContext = buildRecentContext(messages.slice(-10), includeRecentContext); const urlMatch = userMessage.match(/https?:\/\/[^\s]+/i); const requestText = userMessage.replace(/@eivorak\b/i, '').trim() || userMessage; const cleanMessage = repliedTo ? `Mensagem a que respondeste (${repliedTo.senderNickname}):\n${repliedTo.plaintext}\n\nPedido:\n${requestText}` : requestText; let imageUrl: string | null = null;
       if (repliedTo?.messageType === 'image' && repliedTo.storagePath) {
         try { const { downloadAndDecryptImage } = await import('@/lib/media'); const blob = await downloadAndDecryptImage(repliedTo.storagePath, rc, { messageId: repliedTo.id, type: 'image' }); imageUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onloadend = () => resolve(reader.result as string); reader.onerror = reject; reader.readAsDataURL(blob); }); } catch { imageUrl = null; }
       }
@@ -645,14 +668,14 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
       if (error || !data?.reply) { const detail = (data as any)?.error || error?.message; setSystemMessage(detail ? `EIVORAK: ${String(detail).slice(0, 80)}` : 'EIVORAK NÃO RESPONDEU — TENTE DE NOVO'); setTimeout(() => setSystemMessage(''), 6000); return; }
       const messageId = crypto.randomUUID(); const encryptedReply = await rc.encryptText(data.reply, { messageId, type: 'text' }); let replyMsg: any = null;
       try {
-        const rpcRes = await insertEivorakReplySecure(roomId, participantId, participantSecret, encryptedReply, messageId);
+        const rpcRes = await insertAiReplySecure(roomId, participantId, participantSecret, encryptedReply, messageId, includeRecentContext);
         replyMsg = Array.isArray(rpcRes) ? rpcRes[0] : rpcRes; // Corrige o problema do array
       } catch { replyMsg = null; }
       
       if (replyMsg && replyMsg.id) {
         setMessages((prev) => {
           if (prev.some((m) => m.id === replyMsg.id)) return prev;
-          return [...prev, { id: replyMsg.id, senderId: replyMsg.sender_id, senderNickname: 'EiVORAK', encryptedContent: encryptedReply, plaintext: data.reply, createdAt: replyMsg.created_at, isOwn: false, state: 'decoded', destroyAt: null, burnConfig: null, reactions: [], readBy: [], messageType: 'text' as MessageType, storagePath: null, durationSeconds: null, replyToMessageId: null, replyToSenderNickname: null, replyToPlaintext: null, capsuleUnlockAt: null, senderDisplayName: null, senderAvatarUrl: null, targetParticipantId: null, isPinned: false, pollData: null, burnAfterListen: false, fileName: null }];
+          return [...prev, { id: replyMsg.id, senderId: replyMsg.sender_id, senderNickname: nickname, encryptedContent: encryptedReply, plaintext: data.reply, createdAt: replyMsg.created_at, isOwn: replyMsg.sender_id === participantId, state: 'decoded', destroyAt: null, burnConfig: null, reactions: [], readBy: [], messageType: 'text' as MessageType, storagePath: null, durationSeconds: null, replyToMessageId: null, replyToSenderNickname: null, replyToPlaintext: null, capsuleUnlockAt: null, senderDisplayName: null, senderAvatarUrl: null, targetParticipantId: null, isPinned: false, pollData: null, burnAfterListen: false, fileName: null, aiGenerated: true, aiContextIncluded: includeRecentContext }];
         });
         if (!focusMode) playReceiveSound();
       }
@@ -947,8 +970,12 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
       <AnimatePresence>
         {showRecapBanner && unreadCount > 10 && !isRecaping && (
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="z-10 flex items-center justify-center px-4 py-2 border-b border-cyber-magenta/20 bg-cyber-magenta/5">
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center justify-center gap-3">
               <span className="font-mono text-[10px] text-cyber-magenta tracking-widest flex items-center gap-1"><Brain size={12} /> TENS {unreadCount} MENSAGENS NÃO LIDAS.</span>
+              <label className="flex min-h-11 items-center gap-2 font-mono text-[9px] tracking-widest text-cyber-text-dim">
+                <input type="checkbox" checked={includeRecentContext} onChange={(event) => setIncludeRecentContext(event.target.checked)} className="accent-cyber-magenta" />
+                INCLUIR CONVERSA RECENTE
+              </label>
               <button onClick={handleRecap} className="clip-hud-sm border border-cyber-magenta/40 bg-cyber-magenta/20 px-3 py-1 font-mono text-[10px] tracking-widest text-cyber-magenta hover:bg-cyber-magenta/30">RESUMIR COM EIVORAK</button>
               <button onClick={() => setShowRecapBanner(false)} className="text-cyber-text-faint hover:text-cyber-red"><X size={14} /></button>
             </div>
@@ -1005,7 +1032,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
             <input ref={inputRef} type="text" name="message" aria-label="Mensagem" autoComplete="off" value={input} onChange={(e) => { setInput(e.target.value); broadcastTyping(); }} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} maxLength={500} placeholder="Escreve uma mensagem…" className="min-w-0 flex-1 bg-transparent font-mono text-sm text-cyber-green placeholder-cyber-text-faint focus:outline-none" />
             <div className="relative shrink-0">
               <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setShowEivorakMenu((v) => !v)} className="text-cyber-magenta transition-colors hover:text-cyber-magenta/70" title="EiVORAK"><Sparkles size={16} /></motion.button>
-              <AnimatePresence>{showEivorakMenu && (<motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }} className="absolute bottom-10 right-0 z-30 w-52 clip-hud-sm border border-cyber-magenta/30 bg-cyber-bg/95 p-1 backdrop-blur">{[{ label: 'RESUMIR CONVERSA', prompt: '@eivorak resume a conversa até aqui' }, { label: 'CONVIDAR PRO JOGO', prompt: '@eivorak vamos jogar ' }, { label: 'TRADUZIR', prompt: '@eivorak traduz: ' }, { label: 'TIRAR UMA DÚVIDA', prompt: '@eivorak ' }, { label: 'ANALISAR LINK', prompt: '@eivorak o que achas deste link: ' }].map((opt) => (<button key={opt.label} onClick={() => { setInput(opt.prompt); setShowEivorakMenu(false); inputRef.current?.focus(); }} className="block w-full px-3 py-2 text-left font-mono text-[10px] tracking-widest text-cyber-text-dim transition-colors hover:bg-cyber-magenta/10 hover:text-cyber-magenta">{opt.label}</button>))}</motion.div>)}</AnimatePresence>
+              <AnimatePresence>{showEivorakMenu && (<motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute bottom-10 right-0 z-30 w-60 clip-hud-sm border border-cyber-magenta/30 bg-cyber-bg/95 p-1 backdrop-blur"><label className="flex min-h-11 items-center gap-2 border-b border-cyber-magenta/20 px-3 font-mono text-[9px] tracking-widest text-cyber-text-dim"><input type="checkbox" checked={includeRecentContext} onChange={(event) => setIncludeRecentContext(event.target.checked)} className="accent-cyber-magenta" />INCLUIR CONVERSA RECENTE</label>{[{ label: 'RESUMIR CONVERSA', prompt: '@eivorak resume a conversa até aqui' }, { label: 'CONVIDAR PRO JOGO', prompt: '@eivorak vamos jogar ' }, { label: 'TRADUZIR', prompt: '@eivorak traduz: ' }, { label: 'TIRAR UMA DÚVIDA', prompt: '@eivorak ' }, { label: 'ANALISAR LINK', prompt: '@eivorak o que achas deste link: ' }].map((opt) => (<button key={opt.label} onClick={() => { setInput(opt.prompt); setShowEivorakMenu(false); inputRef.current?.focus(); }} className="block w-full min-h-11 px-3 py-2 text-left font-mono text-[10px] tracking-widest text-cyber-text-dim transition-colors hover:bg-cyber-magenta/10 hover:text-cyber-magenta">{opt.label}</button>))}</motion.div>)}</AnimatePresence>
             </div>
             
             <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={() => setShowPollCreator(true)} aria-label="Criar enquete" className="flex h-11 w-11 shrink-0 items-center justify-center text-cyber-cyan transition-colors hover:text-cyber-cyan-dim disabled:opacity-40" title="Criar Enquete"><BarChart2 size={16} /></motion.button>
@@ -1030,6 +1057,8 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
           </motion.div>
         </motion.div>
       )}</AnimatePresence>
+
+      {showAiConsent && <AiConsentDialog onAccept={() => resolveAiConsent(true)} onCancel={() => resolveAiConsent(false)} />}
 
       {/* MODAL DE CRIAR ENQUETE */}
       <AnimatePresence>{showPollCreator && (

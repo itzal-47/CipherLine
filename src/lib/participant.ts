@@ -277,19 +277,21 @@ export async function updateRoomBurnConfigSecure(
   if (error) throw error;
 }
 
-export async function insertEivorakReplySecure(
+export async function insertAiReplySecure(
   roomId: string,
   callerParticipantId: string,
   callerSecret: string,
   encryptedReply: string,
-  messageId?: string,
+  messageId: string,
+  contextIncluded: boolean,
 ) {
-  const { data, error } = await supabase.rpc('insert_eivorak_reply_secure', {
+  const { data, error } = await supabase.rpc('insert_ai_reply_secure', {
     p_room_id: roomId,
     p_caller_participant_id: callerParticipantId,
     p_caller_secret: callerSecret,
     p_encrypted_reply: encryptedReply,
-    ...(messageId ? { p_message_id: messageId } : {}),
+    p_message_id: messageId,
+    p_context_included: contextIncluded,
   });
   if (error) throw error;
   return data;

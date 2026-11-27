@@ -163,6 +163,8 @@ export interface DecodedMessage {
   pollData: PollData | null;
   burnAfterListen: boolean;
   fileName?: string | null;
+  aiGenerated?: boolean;
+  aiContextIncluded?: boolean;
 }
 export interface Friend {
   id: string;
