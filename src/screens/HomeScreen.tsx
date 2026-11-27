@@ -141,7 +141,9 @@ export function HomeScreen({ onNavigate, onLogin, isGuest, hasAccount, onOpenSet
         transition={{ delay: 1.5 }}
         className="absolute bottom-4 font-mono text-[10px] tracking-widest text-cyber-text-faint"
       >
-        AES-256-GCM · PBKDF2 · ZERO-KNOWLEDGE
+        <span>AES-256-GCM · CIFRA NO DISPOSITIVO</span>
+        <span className="mx-2">·</span>
+        <a href="/privacidade.html" className="transition-colors hover:text-cyber-text-dim">Privacidade</a>
       </motion.div>
     </div>
   );
