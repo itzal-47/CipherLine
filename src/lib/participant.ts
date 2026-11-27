@@ -10,6 +10,7 @@
 import { supabase } from './supabase';
 import { getDeviceId, getSavedParticipantCreds } from './device';
 import { PARTICIPANT_COLUMNS } from './columns';
+import { SECURE_READS } from './flags';
 
 export interface SecureJoinResult {
   participantId: string;
@@ -70,6 +71,7 @@ export async function verifyParticipant(
   secret: string | null,
 ): Promise<boolean> {
   if (!secret) {
+    if (SECURE_READS) return false;
     const { data } = await supabase
       .from('participants')
       .select(PARTICIPANT_COLUMNS.identity)

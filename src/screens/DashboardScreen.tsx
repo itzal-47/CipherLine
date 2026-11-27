@@ -9,6 +9,7 @@ import { PROFILE_COLUMNS } from '@/lib/columns';
 import { createRoomCrypto } from '@/lib/roomCrypto';
 import { DECRYPT_FAILED, NO_KEY } from '@/lib/cryptoV2';
 import { getRoomSecret } from '@/lib/roomKeys';
+import { SECURE_READS } from '@/lib/flags';
 
 interface DashboardScreenProps {
   profile: UserProfile;
@@ -106,19 +107,19 @@ export function DashboardScreen({ profile, onJoinRoom, onCreateChannel, onJoinBy
   }, []);
 
   // Realtime do dashboard.
-  // Filtro por room_ids e' feito no CLIENTE (o Supabase Realtime nao suporta
-  // filter "in" em postgres_changes). Sem isto, cada mensagem em QUALQUER
-  // sala do mundo disparava loadPreviews() para este user.
   useEffect(() => {
-    const channel = supabase.channel('dashboard-realtime')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload: any) => {
+    const dashboardChannel = supabase.channel('dashboard-realtime');
+    if (!SECURE_READS) {
+      dashboardChannel.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload: any) => {
         const roomId = payload?.new?.room_id;
         if (!roomId || !roomIdsRef.current.has(roomId)) return;
         if (previewDebounceRef.current) clearTimeout(previewDebounceRef.current);
         previewDebounceRef.current = setTimeout(() => {
           void loadPreviewsRef.current();
         }, 500);
-      })
+      });
+    }
+    dashboardChannel
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'stories' }, () => {
         void loadStoriesRef.current();
       })
@@ -128,14 +129,28 @@ export function DashboardScreen({ profile, onJoinRoom, onCreateChannel, onJoinBy
         void loadMembershipRef.current();
       })
       .subscribe();
+    let userSyncChannel: ReturnType<typeof supabase.channel> | null = null;
+    if (SECURE_READS && profile.id) {
+      userSyncChannel = supabase.channel(`user-sync-${profile.id}`)
+        .on('broadcast', { event: 'sync' }, (payload) => {
+          const roomId = payload?.payload?.r as string | undefined;
+          if (!roomId || !roomIdsRef.current.has(roomId)) return;
+          if (previewDebounceRef.current) clearTimeout(previewDebounceRef.current);
+          previewDebounceRef.current = setTimeout(() => {
+            void loadPreviewsRef.current();
+          }, 500);
+        })
+        .subscribe();
+    }
     return () => {
       if (previewDebounceRef.current) {
         clearTimeout(previewDebounceRef.current);
         previewDebounceRef.current = null;
       }
-      channel.unsubscribe();
+      dashboardChannel.unsubscribe();
+      if (userSyncChannel) userSyncChannel.unsubscribe();
     };
-  }, []);
+  }, [profile.id]);
 
   const loadDashboardBg = async () => {
     if (!profile.id) return;
