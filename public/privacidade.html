@@ -134,18 +134,23 @@
   <h3>Se perderes a chave</h3>
   <p>Como não guardamos as chaves das salas, se saíres da conta ou limparem os dados do dispositivo, deixas de conseguir ler as mensagens antigas dessas salas até receberes um novo convite.</p>
 
-  <h2>4. EiVORAK (assistente de IA)</h2>
+  <h2 id="eivorak">4. EiVORAK (assistente de IA)</h2>
   <div class="box warn">
     <p>O assistente EiVORAK <strong>não tem cifra de ponta a ponta</strong>. Quando o usas, o que lhe envias passa em claro pelo nosso servidor e segue para o fornecedor de IA <strong>Groq</strong>, que gera a resposta. Não uses o EiVORAK em conversas com informação sensível.</p>
   </div>
-  <p>Usas o EiVORAK quando escreves <code>@eivorak</code> numa sala, quando escreves na sala do EiVORAK, ou quando pedes um resumo das mensagens por ler. Nesses casos são enviados:</p>
+  <p>Antes da primeira utilização, a app mostra um aviso e só avança se aceitares. Podes retirar o consentimento a qualquer momento nas Definições.</p>
+  <h3>O que enviamos por defeito</h3>
   <ul>
     <li>o texto do teu pedido;</li>
-    <li>as <strong>últimas mensagens da sala (até 10)</strong> como contexto, <strong>incluindo as de outros participantes</strong>, com o nome de quem as enviou;</li>
-    <li>no resumo, as mensagens que ainda não leste;</li>
+    <li>o texto da mensagem a que respondeste, se for uma mensagem de texto;</li>
     <li>a imagem, se respondeste a uma imagem, e a ligação, se incluíste uma no pedido.</li>
   </ul>
-  <p>Ou seja, ao pedir ajuda ao EiVORAK estás a partilhar essas mensagens com estes serviços. O registo técnico do nosso servidor pode conter o texto do pedido. A resposta do EiVORAK fica depois guardada na sala, cifrada como as restantes mensagens. Estamos a trabalhar para pedir o teu consentimento antes de cada uso e para reduzir o que é enviado.</p>
+  <h3>O que só enviamos se escolheres</h3>
+  <ul>
+    <li><strong>Incluir conversa recente</strong>: um interruptor que ligas para uma pergunta. Envia as <strong>últimas mensagens da sala (até 10)</strong>, incluindo as de outros participantes, com o nome de quem as enviou. Volta a desligar-se depois de cada pergunta.</li>
+    <li><strong>Resumo</strong>: ao pedires um resumo, enviamos as mensagens que ainda não leste, depois de te mostrarmos quantas são e de confirmares.</li>
+  </ul>
+  <p>Ou seja, quando incluis a conversa ou pedes um resumo, estás a partilhar essas mensagens, incluindo as de outras pessoas, com estes serviços. A resposta do EiVORAK fica guardada na sala, cifrada como as restantes mensagens, e aparece identificada como "EiVORAK · pedido por" o participante que a pediu, e com a indicação de que incluiu a conversa, se for o caso.</p>
 
   <h2>5. Porque tratamos estes dados</h2>
   <ul>
