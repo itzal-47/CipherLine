@@ -86,8 +86,6 @@ Deno.serve(async (req: Request) => {
     }
 
     const { message, recentContext, imageUrl, linkUrl } = await req.json();
-    console.log("[EiVORAK] Recebido:", { message, hasImage: !!imageUrl, hasLink: !!linkUrl });
-
     if (!message || typeof message !== "string") {
       return new Response(JSON.stringify({ error: "Message is required" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
@@ -137,12 +135,12 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ reply }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
     } catch (groqErr: any) {
-      console.error("[EiVORAK] ERRO NA GROQ:", groqErr);
+      console.error("[EiVORAK] Falha na chamada à Groq.");
       return new Response(JSON.stringify({ error: `Groq API: ${groqErr.message || 'Falha na chamada'}` }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
   } catch (err: any) {
-    console.error("[EiVORAK] ERRO GERAL:", err);
+    console.error("[EiVORAK] Falha ao processar o pedido.");
     return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
 });

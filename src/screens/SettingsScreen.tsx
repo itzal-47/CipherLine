@@ -10,6 +10,7 @@ import { getImageUrl, deleteStorageFile, uploadBackgroundImage } from '@/lib/med
 import { hasPin, setPin, clearPin } from '@/lib/pin';
 import type { UserProfile } from '@/types';
 import { PROFILE_COLUMNS } from '@/lib/columns';
+import { hasAiConsent, revokeAiConsent } from '@/lib/aiConsent';
 
 function InstagramIcon({ size = 14, className = '' }: { size?: number; className?: string }) {
   return (
@@ -51,6 +52,7 @@ export function SettingsScreen({ profile, onClose, onSignOut, onAccountDeleted, 
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileSaved, setProfileSaved] = useState(false);
   const [accountEmail, setAccountEmail] = useState('');
+  const [aiConsentActive, setAiConsentActive] = useState(() => hasAiConsent());
 
   // Fundo do Dashboard
   const [dashBgUrl, setDashBgUrl] = useState<string | null>(null);
@@ -255,6 +257,18 @@ export function SettingsScreen({ profile, onClose, onSignOut, onAccountDeleted, 
                       OVER RIDE — HOLOGRAMA VIBRANTE{theme === 'overide' && <span>●</span>}
                     </button>
                   </div>
+                </div>
+
+                <div className="glass clip-hud-sm flex flex-wrap items-center justify-between gap-3 p-4">
+                  <div>
+                    <div className="font-mono text-xs tracking-widest text-cyber-magenta">EIVORAK (IA EXTERNA)</div>
+                    <div className="mt-1 font-mono text-[10px] tracking-widest text-cyber-text-dim">{aiConsentActive ? 'ATIVO' : 'INATIVO'}</div>
+                  </div>
+                  {aiConsentActive && (
+                    <button onClick={() => { revokeAiConsent(); setAiConsentActive(false); }} className="min-h-11 clip-hud-sm border border-cyber-magenta/30 px-3 py-2 font-mono text-[10px] tracking-widest text-cyber-magenta hover:bg-cyber-magenta/10">
+                      RETIRAR CONSENTIMENTO
+                    </button>
+                  )}
                 </div>
 
                 {/* FUNDO DO DASHBOARD */}
