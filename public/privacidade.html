@@ -136,8 +136,16 @@
 
   <h2>4. EiVORAK (assistente de IA)</h2>
   <div class="box warn">
-    <p>Quando <strong>pedes</strong> ajuda ao EiVORAK, o texto do pedido (e a imagem, se enviares uma) é enviado ao nosso servidor <strong>sem cifra de ponta a ponta</strong> e depois ao fornecedor de IA <strong>Groq</strong>, para gerar a resposta. Não envies informação sensível ao EiVORAK. Só enviamos o que pedires que seja processado, nunca o resto da conversa.</p>
+    <p>O assistente EiVORAK <strong>não tem cifra de ponta a ponta</strong>. Quando o usas, o que lhe envias passa em claro pelo nosso servidor e segue para o fornecedor de IA <strong>Groq</strong>, que gera a resposta. Não uses o EiVORAK em conversas com informação sensível.</p>
   </div>
+  <p>Usas o EiVORAK quando escreves <code>@eivorak</code> numa sala, quando escreves na sala do EiVORAK, ou quando pedes um resumo das mensagens por ler. Nesses casos são enviados:</p>
+  <ul>
+    <li>o texto do teu pedido;</li>
+    <li>as <strong>últimas mensagens da sala (até 10)</strong> como contexto, <strong>incluindo as de outros participantes</strong>, com o nome de quem as enviou;</li>
+    <li>no resumo, as mensagens que ainda não leste;</li>
+    <li>a imagem, se respondeste a uma imagem, e a ligação, se incluíste uma no pedido.</li>
+  </ul>
+  <p>Ou seja, ao pedir ajuda ao EiVORAK estás a partilhar essas mensagens com estes serviços. O registo técnico do nosso servidor pode conter o texto do pedido. A resposta do EiVORAK fica depois guardada na sala, cifrada como as restantes mensagens. Estamos a trabalhar para pedir o teu consentimento antes de cada uso e para reduzir o que é enviado.</p>
 
   <h2>5. Porque tratamos estes dados</h2>
   <ul>
