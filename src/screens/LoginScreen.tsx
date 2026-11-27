@@ -433,6 +433,12 @@ function FormView(props: any) {
           </span>
         </button>
 
+        {props.mode === 'signup' && (
+          <p className="text-center font-mono text-[10px] text-slate-500">
+            Ao criar conta aceitas a <a href="/privacidade.html" className="underline transition-colors hover:text-cyan-300">Política de Privacidade</a>
+          </p>
+        )}
+
         {/* Forgot password (signin only) */}
         {props.mode === 'signin' && (
           <button

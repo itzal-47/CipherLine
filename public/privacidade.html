@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="theme-color" content="#0a0a0f" />
+<meta name="referrer" content="no-referrer" />
+<title>Política de Privacidade — CipherLine</title>
+<meta name="description" content="Que dados o CipherLine trata, para quê, com quem os partilha e como exercer os teus direitos." />
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --panel: #11121a;
+    --text: #e6e8ee;
+    --dim: #9aa0b2;
+    --line: #23263a;
+    --accent: #3ee6b0;
+    --warn: #ffb454;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f7f8fb; --panel: #ffffff; --text: #14161f; --dim: #5a6075; --line: #dfe2ec; --accent: #0a8f68; --warn: #b36b00; }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: max(20px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  }
+  main { max-width: 760px; margin: 0 auto; }
+  a { color: var(--accent); }
+  .back { display: inline-block; margin-bottom: 20px; font-size: 14px; text-decoration: none; }
+  h1 { font-size: 28px; line-height: 1.2; margin: 0 0 6px; }
+  h2 { font-size: 20px; margin: 36px 0 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+  h3 { font-size: 16px; margin: 20px 0 4px; }
+  p, li { color: var(--text); }
+  .meta { color: var(--dim); font-size: 14px; margin: 0 0 24px; }
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin: 16px 0; }
+  .box.warn { border-color: var(--warn); }
+  .box p { margin: 0; }
+  ul { padding-left: 20px; }
+  li { margin: 4px 0; }
+  .tablewrap { overflow-x: auto; margin: 12px 0; border: 1px solid var(--line); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  th { background: var(--panel); color: var(--dim); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  footer { margin-top: 40px; color: var(--dim); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <a class="back" href="/">← Voltar ao CipherLine</a>
+
+  <h1>Política de Privacidade</h1>
+  <p class="meta">CipherLine · Última atualização: 27 de novembro de 2026</p>
+
+  <div class="box">
+    <p><strong>Em resumo.</strong> O CipherLine existe para conversas privadas e efémeras. O conteúdo das mensagens das salas criadas com o sistema atual é cifrado no teu dispositivo antes de sair dele. Não vendemos dados, não mostramos publicidade e não usamos ferramentas de análise de comportamento. Mesmo assim, há dados que o serviço vê (por exemplo, quem enviou e quando) e algumas funções que ainda não têm cifra de ponta a ponta. Explicamos tudo abaixo, sem rodeios.</p>
+  </div>
+
+  <h2>1. Quem é o responsável</h2>
+  <p>O CipherLine é um serviço da marca <strong>EiVORAK</strong>, da responsabilidade de <strong>José Eduardo Numa Canjo</strong>.</p>
+  <p>Contacto para qualquer questão sobre privacidade: <a href="mailto:oficialcipher@gmail.com">oficialcipher@gmail.com</a></p>
+
+  <h2>2. Que dados tratamos</h2>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>Dados</th><th>Para quê</th><th>Notas</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Conta</strong><br />email e palavra-passe</td>
+          <td>Criar e proteger a tua conta, enviar o código de verificação.</td>
+          <td>A palavra-passe é guardada apenas em forma de hash, gerida pelo nosso fornecedor de autenticação (Supabase). Não a vemos.</td>
+        </tr>
+        <tr>
+          <td><strong>Perfil</strong><br />apelido, nome de apresentação, avatar, fundos de ecrã, preferências</td>
+          <td>Mostrar a tua identidade e personalizar a app.</td>
+          <td>O nome e o avatar só são mostrados numa sala se escolheres revelá-los.</td>
+        </tr>
+        <tr>
+          <td><strong>Participação em salas</strong><br />nome na sala, hora do último acesso, identificador do dispositivo, segredo de participante</td>
+          <td>Saber quem está na sala, voltar a entrar e impedir que outros se façam passar por ti.</td>
+          <td>O segredo de participante é guardado em forma de hash.</td>
+        </tr>
+        <tr>
+          <td><strong>Mensagens</strong></td>
+          <td>Entregar as mensagens aos outros participantes.</td>
+          <td>O texto é guardado cifrado. O serviço vê metadados: sala, remetente, hora, tipo de mensagem (texto, áudio, imagem, cápsula, enquete) e tamanho.</td>
+        </tr>
+        <tr>
+          <td><strong>Imagens e áudio</strong></td>
+          <td>Entregar ficheiros nas conversas.</td>
+          <td>Guardados num armazenamento do Supabase. Nas salas com o sistema atual são cifrados no teu dispositivo antes do envio.</td>
+        </tr>
+        <tr>
+          <td><strong>Histórias e amigos</strong></td>
+          <td>Funções sociais (histórias que expiram, lista de amigos).</td>
+          <td>As histórias <strong>ainda não têm cifra de ponta a ponta</strong>. Estamos a trabalhar nisso.</td>
+        </tr>
+        <tr>
+          <td><strong>Notificações</strong><br />subscrição push do navegador</td>
+          <td>Avisar-te de novas mensagens.</td>
+          <td>Só se deres permissão. A notificação não inclui o texto da mensagem. Podes retirar a permissão no navegador a qualquer momento.</td>
+        </tr>
+        <tr>
+          <td><strong>Comentários</strong><br />mensagem e email de contacto (opcional)</td>
+          <td>Receber e responder ao que nos enviares.</td>
+          <td>Só se usares o formulário de comentários.</td>
+        </tr>
+        <tr>
+          <td><strong>Dados técnicos</strong><br />endereço IP, tipo de navegador, registos de erros</td>
+          <td>Segurança, prevenção de abuso e funcionamento do serviço.</td>
+          <td>Ficam nos registos dos nossos fornecedores de alojamento e base de dados, pelos prazos que eles aplicam.</td>
+        </tr>
+        <tr>
+          <td><strong>No teu dispositivo</strong><br />chaves das salas, sessão, tema, PIN</td>
+          <td>Permitir-te ler as conversas e usar a app.</td>
+          <td>Ficam no armazenamento do navegador. São apagadas quando saíres da conta, usares o botão de pânico ou limpares os dados do site.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>3. Cifra: o que protege e o que não protege</h2>
+  <h3>Salas criadas com o sistema atual</h3>
+  <p>A chave da sala vai no fragmento do link de convite (a parte depois do <code>#</code>), que o navegador <strong>não envia</strong> aos servidores. O texto e os ficheiros são cifrados e decifrados apenas nos dispositivos dos participantes. Quem tiver o link de convite completo consegue entrar e ler a sala, por isso trata os convites como segredos.</p>
+  <h3>Salas antigas e salas públicas</h3>
+  <p>As salas criadas antes desta atualização usam um sistema anterior, em que o código da sala funciona como chave. Nessas salas, quem tiver o código pode ler as mensagens. Também as conversas diretas e as respostas privadas continuam, para já, no sistema anterior.</p>
+  <h3>O que o serviço consegue ver</h3>
+  <p>Mesmo com cifra, o serviço consegue ver metadados: a existência das salas, quem participa, quando se enviam mensagens, o tipo e o tamanho. Não consegue ler o texto cifrado das salas do sistema atual.</p>
+  <h3>Se perderes a chave</h3>
+  <p>Como não guardamos as chaves das salas, se saíres da conta ou limparem os dados do dispositivo, deixas de conseguir ler as mensagens antigas dessas salas até receberes um novo convite.</p>
+
+  <h2>4. EiVORAK (assistente de IA)</h2>
+  <div class="box warn">
+    <p>Quando <strong>pedes</strong> ajuda ao EiVORAK, o texto do pedido (e a imagem, se enviares uma) é enviado ao nosso servidor <strong>sem cifra de ponta a ponta</strong> e depois ao fornecedor de IA <strong>Groq</strong>, para gerar a resposta. Não envies informação sensível ao EiVORAK. Só enviamos o que pedires que seja processado, nunca o resto da conversa.</p>
+  </div>
+
+  <h2>5. Porque tratamos estes dados</h2>
+  <ul>
+    <li><strong>Prestar o serviço</strong> que pediste (conta, salas, mensagens, ficheiros).</li>
+    <li><strong>O teu consentimento</strong>, para notificações push e para usar o assistente de IA. Podes retirá-lo quando quiseres.</li>
+    <li><strong>Segurança e prevenção de abuso</strong>, que é um interesse legítimo nosso e dos utilizadores.</li>
+  </ul>
+  <p>Não vendemos dados pessoais, não os usamos para publicidade e não fazemos perfis de comportamento.</p>
+
+  <h2>6. Com quem partilhamos</h2>
+  <p>Usamos fornecedores que tratam dados por nossa conta e só para fazer o serviço funcionar:</p>
+  <ul>
+    <li><strong>Supabase</strong>: base de dados, autenticação, armazenamento de ficheiros e funções do servidor.</li>
+    <li><strong>Vercel</strong>: alojamento da aplicação.</li>
+    <li><strong>Resend</strong>: envio dos emails com o código de verificação.</li>
+    <li><strong>Groq</strong>: processamento dos pedidos feitos ao EiVORAK.</li>
+    <li><strong>Serviços de push dos navegadores</strong> (por exemplo, Google, Mozilla ou Apple): entregam as notificações.</li>
+  </ul>
+  <p>Alguns destes fornecedores podem tratar dados em países diferentes do teu. Também podemos divulgar dados se a lei nos obrigar.</p>
+
+  <h2>7. Quanto tempo guardamos</h2>
+  <ul>
+    <li><strong>Salas e mensagens:</strong> as salas são efémeras. As mensagens são apagadas quando a sala é apagada ou expira, ou antes, se usares os temporizadores de autodestruição ou apagares a mensagem. Os ficheiros associados são removidos com elas.</li>
+    <li><strong>Conta e perfil:</strong> até apagares a conta. Podes fazê-lo nas Definições; a conta e os dados associados são então removidos.</li>
+    <li><strong>Histórias:</strong> expiram automaticamente.</li>
+    <li><strong>Registos técnicos:</strong> pelos prazos dos fornecedores indicados acima.</li>
+  </ul>
+
+  <h2>8. Os teus direitos</h2>
+  <p>Podes pedir-nos acesso aos teus dados, a sua correção, a sua eliminação, a limitação ou oposição ao tratamento, e a portabilidade. Podes retirar o consentimento a qualquer momento. Escreve para <a href="mailto:oficialcipher@gmail.com">oficialcipher@gmail.com</a> a partir do email da tua conta, para podermos confirmar que és tu. Se achares que não tratámos bem o teu pedido, podes apresentar queixa à autoridade de proteção de dados do teu país.</p>
+
+  <h2>9. Segurança e limites</h2>
+  <p>Usamos cifra, controlo de acesso na base de dados e comunicação segura (HTTPS). Nenhum sistema é perfeito, e não podemos garantir segurança absoluta. A cifra não protege contra quem tenha acesso ao teu dispositivo desbloqueado, ao link de convite, ou contra um participante que copie ou fotografe uma mensagem.</p>
+
+  <h2>10. Crianças</h2>
+  <p>O CipherLine não se destina a menores de 16 anos. Se descobrirmos que tratámos dados de um menor sem a autorização exigida, apagamo-los.</p>
+
+  <h2>11. Alterações a esta política</h2>
+  <p>Podemos atualizar esta política quando o serviço mudar. A data no topo indica a última alteração. Se a mudança for importante, avisamos dentro da app.</p>
+
+  <footer>
+    © EiVORAK · Contacto: <a href="mailto:oficialcipher@gmail.com">oficialcipher@gmail.com</a>
+  </footer>
+</main>
+</body>
+</html>

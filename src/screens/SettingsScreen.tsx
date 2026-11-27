@@ -228,6 +228,13 @@ export function SettingsScreen({ profile, onClose, onSignOut, onAccountDeleted, 
                     <ChevronRight size={14} className="text-cyber-text-dim" />
                   </button>
                 ))}
+                <a href="/privacidade.html" className="glass clip-hud-sm flex w-full items-center justify-between px-4 py-4 transition-colors hover:bg-cyber-green/5">
+                  <div className="flex items-center gap-3">
+                    <FileText size={16} className="text-cyber-green" />
+                    <span className="font-mono text-xs tracking-widest text-cyber-text">POLÍTICA DE PRIVACIDADE</span>
+                  </div>
+                  <ChevronRight size={14} className="text-cyber-text-dim" />
+                </a>
               </motion.div>
             )}
 

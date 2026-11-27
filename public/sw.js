@@ -3,7 +3,7 @@
 // Versão: incrementar sempre que alterares este ficheiro,
 // para forçar a atualização nos clientes já instalados.
 // ============================================================
-const SW_VERSION = 'v1.2.0';
+const SW_VERSION = 'v1.3.0';
 const CACHE_NAME = `cipherline-static-${SW_VERSION}`;
 const SHELL_URLS = ['/', '/manifest.webmanifest', '/favicon.svg', '/icon-192.png', '/offline.html'];
 const STATIC_URLS = new Set([
@@ -67,13 +67,16 @@ self.addEventListener('fetch', (event) => {
     event.respondWith((async () => {
       try {
         const response = await fetch(request);
-        if (url.search === '') {
+        if (url.pathname === '/' && url.search === '') {
           const cache = await caches.open(CACHE_NAME);
           await cacheSuccessfulResponse(cache, '/', response);
         }
         return response;
       } catch {
         const cache = await caches.open(CACHE_NAME);
+        if (url.pathname === '/privacidade.html') {
+          return (await cache.match('/offline.html')) || Response.error();
+        }
         const shell = await cache.match('/');
         if (shell) return shell;
         return (await cache.match('/offline.html')) || Response.error();
