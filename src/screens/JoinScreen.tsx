@@ -7,6 +7,7 @@ import { saveParticipantCreds } from '@/lib/device';
 import { joinRoomSecure } from '@/lib/participant';
 import { getJoinToken } from '@/lib/roomCrypto';
 import { getRoomSecret, saveRoomSecret } from '@/lib/roomKeys';
+import { SECURE_READS } from '@/lib/flags';
 
 interface JoinScreenProps {
   nickname: string;
@@ -64,16 +65,20 @@ export function JoinScreen({ nickname, onBack, onChannelJoined, onExpired, userI
     const isPermanent = room.is_permanent ?? false;
 
     // Gatilho de inatividade: verifica antes de deixar entrar.
-    const { data: mediaMsgs } = await supabase
-      .from('messages')
-      .select('storage_path')
-      .eq('room_id', room.id)
-      .not('storage_path', 'is', null);
+    let mediaMsgs: { storage_path: string | null }[] | null = null;
+    if (!SECURE_READS) {
+      const { data } = await supabase
+        .from('messages')
+        .select('storage_path')
+        .eq('room_id', room.id)
+        .not('storage_path', 'is', null);
+      mediaMsgs = data;
+    }
     const { data: wasWiped } = await supabase.rpc('check_and_wipe_if_inactive', {
       p_room_id: room.id,
     });
     if (wasWiped) {
-      if (mediaMsgs && mediaMsgs.length > 0) {
+      if (!SECURE_READS && mediaMsgs && mediaMsgs.length > 0) {
         const paths = mediaMsgs.map((m) => m.storage_path).filter(Boolean) as string[];
         await supabase.storage.from('cipherline-media').remove(paths);
       }

@@ -13,6 +13,9 @@ import { generateRoomSecret } from '@/lib/cryptoV2';
 import { getRoomSecret, saveRoomSecret } from '@/lib/roomKeys';
 import { InviteSheet } from '@/components/InviteSheet';
 import { getJoinToken } from '@/lib/roomCrypto';
+import { SECURE_READS } from '@/lib/flags';
+import { watchForOtherParticipant } from '@/lib/roomData';
+import type { RoomCredentials } from '@/lib/roomData';
 
 interface CreateScreenProps {
   nickname: string;
@@ -51,12 +54,14 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
   const [error, setError] = useState('');
   const [phase, setPhase] = useState<'config' | 'creating' | 'waiting'>('config');
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const watchCancelRef = useRef<(() => void) | null>(null);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     return () => {
       if (channelRef.current) channelRef.current.unsubscribe();
+      watchCancelRef.current?.();
     };
   }, []);
 
@@ -143,18 +148,23 @@ export function CreateScreen({ nickname, onBack, onChannelCreated, isGuest, user
     setStatus('AGUARDANDO PARTICIPANTES...');
     setPhase('waiting');
 
-    channelRef.current = supabase.channel(`room-${createdRoom.id}`);
-    channelRef.current
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'participants', filter: `room_id=eq.${createdRoom.id}` },
-        (payload) => {
-          if (payload.new.id !== joined.participantId) {
-            onChannelCreated(createdRoom.id, code, joined.participantId, joined.secret, isPermanent, cryptoVersion);
-          }
-        },
-      )
-      .subscribe();
+    if (SECURE_READS) {
+      const creds: RoomCredentials = { roomId: createdRoom.id, participantId: joined.participantId, secret: joined.secret };
+      watchCancelRef.current = watchForOtherParticipant(creds, () => onChannelCreated(createdRoom.id, code, joined.participantId, joined.secret, isPermanent, cryptoVersion));
+    } else {
+      channelRef.current = supabase.channel(`room-${createdRoom.id}`);
+      channelRef.current
+        .on(
+          'postgres_changes',
+          { event: 'INSERT', schema: 'public', table: 'participants', filter: `room_id=eq.${createdRoom.id}` },
+          (payload) => {
+            if (payload.new.id !== joined.participantId) {
+              onChannelCreated(createdRoom.id, code, joined.participantId, joined.secret, isPermanent, cryptoVersion);
+            }
+          },
+        )
+        .subscribe();
+    }
   };
 
   if (phase === 'waiting') {

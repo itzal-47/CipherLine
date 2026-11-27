@@ -8,7 +8,8 @@ import { requestNotificationPermission, subscribeToPush, unsubscribeFromPush } f
 import { uploadEncryptedAudio, uploadEncryptedImage, uploadBackgroundImage, getImageUrl, deleteStorageFile } from '@/lib/media';
 import { insertMessageSecure, deleteMessageSecure, reactSecure, unreactSecure, markReadSecure, updatePresenceSecure, upsertPasteSecure, updateRoomSecure, updateParticipantProfileSecure, updateRoomBurnConfigSecure, leaveRoomSecure, insertAiReplySecure, deleteParticipantCompletelySecure, togglePinMessageSecure, votePollSecure } from '@/lib/participant';
 import { PROFILE_COLUMNS } from '@/lib/columns';
-import { countParticipants, fetchParticipantBrief, fetchParticipantShowProfile, fetchParticipantUserId, fetchParticipants, fetchPaste, fetchRoomMediaPaths, fetchRoomSnapshot, subscribeRoomEvents, type RoomEventsUnsubscribe } from '@/lib/roomData';
+import { countParticipants, fetchParticipantBrief, fetchParticipantShowProfile, fetchParticipantUserId, fetchParticipants, fetchPaste, fetchRoomMediaPaths, fetchRoomSnapshot, isRoomAuthError, subscribeRoomEvents, type RoomCredentials, type RoomEventsUnsubscribe } from '@/lib/roomData';
+import { SECURE_READS } from '@/lib/flags';
 import { StatusDot } from '@/components/StatusDot';
 import { CopyButton } from '@/components/CopyButton';
 import { Typewriter } from '@/components/Typewriter';
@@ -58,6 +59,7 @@ function vibrate(pattern: number | number[]) { if (typeof navigator !== 'undefin
 export function ChatScreen({ roomId, roomCode, participantId, participantSecret, nickname, isPermanent, cryptoVersion, onLeave, userId, onSuppressScanlines, onOpenPrivateReply, initialQuote, onQuoteConsumed }: ChatScreenProps) {
   const roomSecret = cryptoVersion === 2 ? getRoomSecret(roomCode) : null;
   const rc = useMemo(() => createRoomCrypto({ roomCode, cryptoVersion, secret: roomSecret }), [roomCode, cryptoVersion, roomSecret]);
+  const roomCredentials = useMemo<RoomCredentials>(() => ({ roomId, participantId, secret: participantSecret }), [roomId, participantId, participantSecret]);
   const [messages, setMessages] = useState<DecodedMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLocked, setIsLocked] = useState(() => localStorage.getItem(`cipherline_locked_${roomId}`) === 'true');
@@ -180,6 +182,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
   }, []);
 
   useEffect(() => {
+    if (SECURE_READS && !participantSecret) { onLeave(); return; }
     if (cryptoVersion === 2 && !rc.hasKey) return;
     loadInitialData(); loadBackground(); loadPaste();
     // Fetch das informações da sala (incluindo se é sala do EiVORAK e o avatar)
@@ -196,7 +199,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
       }
       setIsOwner(data?.owner_id === userId);
     });
-    if (userId) { fetchParticipantShowProfile(participantId).then(({ data }) => { setEditShowProfile(data?.show_profile || false); }); }
+    if (userId) { fetchParticipantShowProfile(roomCredentials).then(({ data, error }) => { if (isRoomAuthError(error)) { onLeave(); return; } setEditShowProfile(data?.show_profile || false); }); }
 
     setupRealtime(); updateLastSeen();
     presenceIntervalRef.current = setInterval(updateLastSeen, PRESENCE_INTERVAL);
@@ -224,9 +227,9 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
       roomDataUnsubscribeRef.current = null; typingChannelRef.current = null; webrtcChannelRef.current = null;
       unsubscribeFromPush(participantId).catch(() => {});
     };
-  }, [roomId, userId, cryptoVersion, rc]);
+  }, [roomId, userId, cryptoVersion, rc, roomCredentials, onLeave, participantSecret]);
 
-  const loadPaste = async () => { const encrypted = await fetchPaste(roomId); if (encrypted) { const plain = await rc.decryptText(encrypted, { messageId: roomId, type: 'paste' }); setPasteContent(plain === DECRYPT_FAILED || plain === NO_KEY ? '' : plain); } };
+  const loadPaste = async () => { try { const encrypted = await fetchPaste(roomCredentials); if (encrypted) { const plain = await rc.decryptText(encrypted, { messageId: roomId, type: 'paste' }); setPasteContent(plain === DECRYPT_FAILED || plain === NO_KEY ? '' : plain); } } catch (error) { if (isRoomAuthError(error)) onLeave(); } };
   const savePaste = async (content: string) => { setPasteSaving(true); try { const encrypted = await rc.encryptText(content, { messageId: roomId, type: 'paste' }); await upsertPasteSecure(roomId, participantId, participantSecret, encrypted); } finally { setPasteSaving(false); } };
   const handlePasteChange = (value: string) => { setPasteContent(value); if (pasteSaveTimerRef.current) clearTimeout(pasteSaveTimerRef.current); pasteSaveTimerRef.current = setTimeout(() => savePaste(value), 800); };
 
@@ -313,7 +316,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
 
   const loadInitialData = async () => {
     try {
-      const { messages: existingMsgs, participants: parts, reactions, receipts } = await fetchRoomSnapshot(roomId);
+      const { messages: existingMsgs, participants: parts, reactions, receipts } = await fetchRoomSnapshot(roomCredentials);
 
       if (parts) {
         setAllParticipants(parts);
@@ -389,6 +392,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
         setMessages(decoded.filter((m) => m.state !== 'destroyed' && !hiddenIds.has(m.id)));
       }
     } catch (err) {
+      if (isRoomAuthError(err)) { onLeave(); return; }
       console.error('[CipherLine] Falha ao carregar dados iniciais:', err);
       setSystemMessage('FALHA AO CARREGAR MENSAGENS');
       setTimeout(() => setSystemMessage(''), 5000);
@@ -402,7 +406,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
   };
 
   const setupRealtime = () => {
-    roomDataUnsubscribeRef.current = subscribeRoomEvents(roomId, {
+    roomDataUnsubscribeRef.current = subscribeRoomEvents(roomCredentials, {
       onPasteChange: async (payload) => {
         if (pasteTextareaFocusedRef.current) return;
         const encrypted = payload.new?.encrypted_content;
@@ -410,7 +414,8 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
       },
       onMessageInsert: async (message) => {
         const msg = message; if (msg.sender_id === participantId) return;
-        const decrypted = await rc.decryptText(msg.encrypted_content, { messageId: msg.id, type: msg.message_type || 'text' }); const plaintext = decrypted === NO_KEY ? DECRYPT_FAILED : decrypted; const { data: sender } = await fetchParticipantBrief(msg.sender_id);
+        const decrypted = await rc.decryptText(msg.encrypted_content, { messageId: msg.id, type: msg.message_type || 'text' }); const plaintext = decrypted === NO_KEY ? DECRYPT_FAILED : decrypted; const { data: sender, error: senderError } = await fetchParticipantBrief(roomCredentials, msg.sender_id);
+        if (isRoomAuthError(senderError)) { onLeave(); return; }
         let senderDisplayName: string | null = null, senderAvatarUrl: string | null = null;
         if (sender?.show_profile && sender?.user_id) { const { data: pr } = await supabase.from('profiles').select(PROFILE_COLUMNS.sender).eq('id', sender.user_id).maybeSingle(); senderDisplayName = pr?.display_name || null; senderAvatarUrl = pr?.avatar_path ? await getImageUrl(pr.avatar_path) : null; }
         const msgBurn = msg.burn_config ? jsonToBurnConfig(msg.burn_config) : null;
@@ -470,11 +475,13 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
           scheduleReconnect();
         }
       },
+      onAuthError: onLeave,
     });
   };
 
   const reconcileParticipants = async () => {
-    const { data } = await fetchParticipants(roomId); if (!data) return;
+    if (SECURE_READS && !participantSecret) { onLeave(); return; }
+    const { data, error } = await fetchParticipants(roomCredentials); if (isRoomAuthError(error)) { onLeave(); return; } if (!data) return;
     setPeers((prev) => { const known = new Set(prev.map((p) => p.id)); const fresh = data.filter((p) => p.id !== participantId); fresh.filter((p) => !known.has(p.id)).forEach((p) => { setSystemMessage(`${p.nickname?.toUpperCase() || 'PARTICIPANTE'} CONECTADO`); setTimeout(() => setSystemMessage(''), 3000); }); return fresh; });
     setAllParticipants(data);
   };
@@ -489,6 +496,7 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
   }, [participantId, nickname, isGhost]);
 
   const setupTypingListener = () => {
+    if (SECURE_READS && !participantSecret) return;
     typingChannelRef.current = supabase.channel(`typing-${roomId}`);
     typingChannelRef.current.on('broadcast', { event: 'typing' }, (payload: any) => {
       const data = payload.payload; if (!data || data.participantId === participantId) return;
@@ -730,7 +738,8 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
 
   const handleReplyPrivate = async (message: DecodedMessage) => {
     if (!userId) { setSystemMessage('PRECISA DE CONTA PARA CONVERSAS PRIVADAS'); setTimeout(() => setSystemMessage(''), 3000); return; }
-    const { data: senderParticipant } = await fetchParticipantUserId(message.senderId);
+    const { data: senderParticipant, error } = await fetchParticipantUserId(roomCredentials, message.senderId);
+    if (isRoomAuthError(error)) { onLeave(); return; }
     if (!senderParticipant?.user_id) { setSystemMessage('ESSA PESSOA ESTÁ SEM CONTA'); setTimeout(() => setSystemMessage(''), 4000); return; }
     if (senderParticipant.user_id === userId) { setSystemMessage('ESSA MENSAGEM É SUA'); setTimeout(() => setSystemMessage(''), 3000); return; }
     try {
@@ -829,8 +838,30 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
     onLeave(); 
   };
   const handleSairDefinitivamente = async () => {
-    await unsubscribeFromPush(participantId).catch(() => {}); try { await deleteParticipantCompletelySecure(participantId, participantSecret); } catch {}
-    if (!isPermanent) { const { count } = await countParticipants(roomId); if (count === 0) { const { data: mediaMsgs } = await fetchRoomMediaPaths(roomId); if (mediaMsgs && mediaMsgs.length > 0) { const paths = mediaMsgs.map((m) => m.storage_path).filter(Boolean) as string[]; await supabase.storage.from('cipherline-media').remove(paths); } } }
+    await unsubscribeFromPush(participantId).catch(() => {});
+    let removeMediaPaths: string[] = [];
+    let wasOnlyParticipant = false;
+    if (SECURE_READS) {
+      const { data: participants, error } = await fetchParticipants(roomCredentials);
+      if (isRoomAuthError(error)) { onLeave(); return; }
+      wasOnlyParticipant = !isPermanent && participants?.length === 1 && participants[0].id === participantId;
+      if (wasOnlyParticipant) {
+        const { data: media, error: mediaError } = await fetchRoomMediaPaths(roomCredentials);
+        if (isRoomAuthError(mediaError)) { onLeave(); return; }
+        removeMediaPaths = (media ?? []).map((row) => row.storage_path).filter(Boolean) as string[];
+      }
+    }
+    try { await deleteParticipantCompletelySecure(participantId, participantSecret); } catch {}
+    if (SECURE_READS) {
+      // A decisão usa o estado antes da remoção; a corrida de uma entrada simultânea já existia no comportamento anterior.
+      if (wasOnlyParticipant && removeMediaPaths.length > 0) await supabase.storage.from('cipherline-media').remove(removeMediaPaths).catch(() => {});
+    } else if (!isPermanent) {
+      const { count } = await countParticipants(roomId);
+      if (count === 0) {
+        const { data: mediaMsgs } = await fetchRoomMediaPaths(roomCredentials);
+        if (mediaMsgs && mediaMsgs.length > 0) { const paths = mediaMsgs.map((m) => m.storage_path).filter(Boolean) as string[]; await supabase.storage.from('cipherline-media').remove(paths); }
+      }
+    }
     onLeave();
   };
 
