@@ -28,6 +28,7 @@ import { InviteSheet } from '@/components/InviteSheet';
 import { AiConsentDialog } from '@/components/AiConsentDialog';
 import { hasAiConsent, grantAiConsent } from '@/lib/aiConsent';
 import { buildRecentContext } from '@/lib/eivorakContext';
+import { friendlyEivorakError } from '@/lib/eivorakErrors';
 
 const CallScreen = lazy(() => import('@/components/CallScreen').then(m => ({ default: m.CallScreen })));
 const GroupCallScreen = lazy(() => import('@/components/GroupCallScreen').then(m => ({ default: m.GroupCallScreen })));
@@ -596,16 +597,24 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
       const { data, error } = await supabase.functions.invoke('eivorak-agent', {
         body: { 
           message: 'Faz um resumo muito breve (máximo 3 parágrafos) do que se passou nestas mensagens não lidas. Diz quem falou do quê e se houve decisões importantes.', 
-          recentContext: contextText 
+          recentContext: contextText,
+          participantId,
+          participantSecret: participantSecret,
         }
       });
       
-      if (error || !data?.reply) throw new Error('Falha no resumo');
+      if (error) throw error;
+      if (!data?.reply) throw new Error('Falha no resumo');
       setRecapText(data.reply);
       setRecapModalOpen(true);
       setShowRecapBanner(false);
-    } catch {
-      setSystemMessage('EIVORAK NÃO CONSEGUIU RESUMIR AGORA'); setTimeout(() => setSystemMessage(''), 4000);
+    } catch (error) {
+      const message = friendlyEivorakError(error, null);
+      const isMappedError = message.startsWith('EIVORAK: LIMITE DE USO')
+        || message.startsWith('EIVORAK: SESSÃO DA SALA INVÁLIDA')
+        || message === 'EIVORAK: PEDIDO DEMASIADO GRANDE.';
+      setSystemMessage(isMappedError ? message : 'EIVORAK NÃO CONSEGUIU RESUMIR AGORA');
+      setTimeout(() => setSystemMessage(''), 4000);
     } finally {
       setIsRecaping(false);
     }
@@ -675,8 +684,8 @@ export function ChatScreen({ roomId, roomCode, participantId, participantSecret,
       if (repliedTo?.messageType === 'image' && repliedTo.storagePath) {
         try { const { downloadAndDecryptImage } = await import('@/lib/media'); const blob = await downloadAndDecryptImage(repliedTo.storagePath, rc, { messageId: repliedTo.id, type: 'image' }); imageUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onloadend = () => resolve(reader.result as string); reader.onerror = reject; reader.readAsDataURL(blob); }); } catch { imageUrl = null; }
       }
-      const { data, error } = await supabase.functions.invoke('eivorak-agent', { body: { message: cleanMessage, recentContext, linkUrl: urlMatch ? urlMatch[0] : null, imageUrl, isSystemRoom } });
-      if (error || !data?.reply) { const detail = (data as any)?.error || error?.message; setSystemMessage(detail ? `EIVORAK: ${String(detail).slice(0, 80)}` : 'EIVORAK NÃO RESPONDEU — TENTE DE NOVO'); setTimeout(() => setSystemMessage(''), 6000); return; }
+      const { data, error } = await supabase.functions.invoke('eivorak-agent', { body: { message: cleanMessage, recentContext, linkUrl: urlMatch ? urlMatch[0] : null, imageUrl, isSystemRoom, participantId, participantSecret: participantSecret } });
+      if (error || !data?.reply) { setSystemMessage(friendlyEivorakError(error, data)); setTimeout(() => setSystemMessage(''), 6000); return; }
       const messageId = crypto.randomUUID(); const encryptedReply = await rc.encryptText(data.reply, { messageId, type: 'text' }); let replyMsg: any = null;
       try {
         const rpcRes = await insertAiReplySecure(roomId, participantId, participantSecret, encryptedReply, messageId, contextIncluded);
